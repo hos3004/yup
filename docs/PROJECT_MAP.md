@@ -1,7 +1,7 @@
 # PROJECT_MAP — E2EE Secure Messaging (YUP)
 
 > **Status:** Internal Alpha, Security-Hardened — NOT closed-beta-ready
-> **Last updated:** 2026-05-09
+> **Last updated:** 2026-05-09 (M9 verified)
 > **Architecture style:** Olm E2EE via Vodozemac (verified), Matrix-style session management
 
 ---
@@ -10,9 +10,9 @@
 
 | Layer | Technology | Version | Source | Status |
 |-------|-----------|---------|--------|--------|
-| **Mobile Framework** | Flutter | 3.41.5 | [docs.flutter.dev](https://docs.flutter.dev) | ✅ Verified |
-| **Language (Mobile)** | Dart | 3.11.5 | [dart.dev](https://dart.dev) | ✅ Verified |
-| **Rust (Crypto FFI)** | Rust toolchain | 1.92.0 (stable-gnu) | [blog.rust-lang.org](https://blog.rust-lang.org) | ⚠️ Below target (target: 1.95.0) |
+| **Mobile Framework** | Flutter | 3.35.7 | [docs.flutter.dev](https://docs.flutter.dev) | ✅ Verified |
+| **Language (Mobile)** | Dart | 3.9.2 | [dart.dev](https://dart.dev) | ✅ Verified |
+| **Rust (Crypto FFI)** | Rust toolchain | 1.95.0 (stable-gnu) | [blog.rust-lang.org](https://blog.rust-lang.org) | ✅ At target |
 | **Crypto Library** | Vodozemac (Olm) | 0.10.0 | [crates.io](https://crates.io/crates/vodozemac) | ✅ Verified |
 | **Backend** | Go | 1.26.2 | [go.dev](https://go.dev) | ✅ Verified |
 | **Database** | PostgreSQL | 17 | [postgresql.org](https://www.postgresql.org) | ✅ Integrated via PostgresStore (runs in Docker) |
@@ -115,10 +115,11 @@ Protocols: Olm session establishment, SAS verification (fingerprint comparison)
 - **Fix (M7):** `PeerKeyStore` pins identity keys, detects changes, shows warning dialog.
 - **Status:** Detection and warning UI coded. Requires end-to-end smoke test with real key rotation.
 
-### Rust Host Build (BLOCKER for Windows development)
+### Rust Host Build — MSVC (BLOCKER for Windows host release build)
 - **Issue:** `msvcrt.lib` missing from VS 2022 Community installation.
 - **Workaround:** Use `cargo +stable-gnu` for all Rust builds (tests and Android cross-compilation).
 - **Android .so files:** Built successfully for x86_64 and arm64-v8a.
+- **Rust toolchain:** 1.95.0 (at target).
 
 ### Inbound Session Persistence
 - **Fix (M7):** `rust_create_inbound_session` now returns `{session_id, plaintext}`.
@@ -144,4 +145,4 @@ Protocols: Olm session establishment, SAS verification (fingerprint comparison)
 | M6-FIX | Project Consistency & Readiness Cleanup | ✅ Completed |
 | **M7** | **Security Correctness & Auth Hardening** | **✅ Completed (Internal Alpha)** |
 | M8 | PostgreSQL Persistence | ✅ Completed |
-| M9 | Security Verification & Evidence Pack | ⏳ Not Started |
+| M9 | Security Verification & Evidence Pack | ✅ Completed |
