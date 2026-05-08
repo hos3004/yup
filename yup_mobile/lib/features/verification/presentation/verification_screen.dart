@@ -23,8 +23,7 @@ class VerificationScreen extends StatefulWidget {
 }
 
 class _VerificationScreenState extends State<VerificationScreen> {
-  late String _myFingerprint;
-  late String _peerFingerprint;
+  late String _conversationFingerprint;
   bool _isVerified = false;
   bool _loading = true;
 
@@ -36,11 +35,9 @@ class _VerificationScreenState extends State<VerificationScreen> {
 
   Future<void> _load() async {
     try {
-      _myFingerprint = widget.cryptoService.getFingerprint(widget.peerCurveKey);
-      // Peer's view would be: getFingerprint(ourKey) — but we can't compute
-      // it without their Olm account locally. We show ours and the expected
-      // matching fingerprint from their perspective.
-      _peerFingerprint = widget.cryptoService.getFingerprint(widget.peerCurveKey);
+      // getFingerprint now produces a canonical, order-independent fingerprint
+      // using both parties' identity keys in sorted order
+      _conversationFingerprint = widget.cryptoService.getFingerprint(widget.peerCurveKey);
       _isVerified = await widget.verificationService.isVerified(widget.peerCurveKey);
     } catch (_) {}
     if (mounted) setState(() => _loading = false);
@@ -69,26 +66,22 @@ class _VerificationScreenState extends State<VerificationScreen> {
                 const Icon(Icons.shield_outlined, size: 64, color: Colors.teal),
                 const SizedBox(height: 16),
                 Text(
-                  'Compare fingerprints',
+                  'Conversation security fingerprint',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Verify this contact by comparing the fingerprint below. '
-                  'Ask them to show the same fingerprint on their device.',
+                  'Verify this conversation by comparing the fingerprint below. '
+                  'Ask ${widget.peerUsername} to show the same fingerprint on their device. '
+                  'Both devices should show an identical fingerprint.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.grey[600]),
                 ),
                 const SizedBox(height: 28),
                 _buildFingerprintCard(
-                  'Your fingerprint\n(${widget.myUsername})',
-                  _myFingerprint,
-                ),
-                const SizedBox(height: 16),
-                _buildFingerprintCard(
-                  'Their fingerprint\n(${widget.peerUsername})',
-                  _peerFingerprint,
+                  'Security fingerprint\n(${widget.myUsername} ↔ ${widget.peerUsername})',
+                  _conversationFingerprint,
                 ),
                 const SizedBox(height: 28),
                 if (_isVerified)

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'package:sqflite_sqlcipher/sqflite.dart';
 import '../../core/secure_storage/secure_storage_service.dart';
@@ -59,5 +60,16 @@ class LocalDatabase {
   Future<void> close() async {
     await _db?.close();
     _db = null;
+  }
+
+  /// Deletes the encrypted database file. Call close() first.
+  Future<void> deleteDatabaseFile() async {
+    await close();
+    final dbPath = await getDatabasesPath();
+    final path = '$dbPath/yup_messages.db';
+    final file = File(path);
+    if (await file.exists()) {
+      await file.delete();
+    }
   }
 }

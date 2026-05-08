@@ -69,16 +69,14 @@ class ApiClient {
   }
 
   Future<Map<String, dynamic>> sendMessage({
-    required String sender,
     required String recipient,
     required String ciphertext,
     required int messageType,
     required String senderKey,
   }) async {
     final request = await _client.postUrl(Uri.parse('$baseUrl/api/v1/messages'));
-    request.headers.contentType = ContentType.json;
+    _headers.forEach((k, v) => request.headers.set(k, v));
     request.write(jsonEncode({
-      'sender': sender,
       'recipient': recipient,
       'ciphertext': ciphertext,
       'message_type': messageType,
@@ -92,8 +90,8 @@ class ApiClient {
     throw HttpException('send failed: ${response.statusCode} $body');
   }
 
-  Future<List<dynamic>> getMessages(String username) async {
-    final request = await _client.getUrl(Uri.parse('$baseUrl/api/v1/messages/$username'));
+  Future<List<dynamic>> getMessages() async {
+    final request = await _client.getUrl(Uri.parse('$baseUrl/api/v1/messages'));
     _headers.forEach((k, v) => request.headers.set(k, v));
     final response = await request.close();
     final body = await response.transform(utf8.decoder).join();
@@ -103,7 +101,7 @@ class ApiClient {
     throw HttpException('get messages failed: ${response.statusCode} $body');
   }
 
-  Future<Map<String, dynamic>> ackMessage(String messageId, String username) async {
+  Future<Map<String, dynamic>> ackMessage(String messageId) async {
     final request = await _client.postUrl(
       Uri.parse('$baseUrl/api/v1/messages/$messageId/ack'),
     );
@@ -116,9 +114,9 @@ class ApiClient {
     throw HttpException('ack failed: ${response.statusCode} $body');
   }
 
-  Future<List<dynamic>> getSentMessages(String username) async {
+  Future<List<dynamic>> getSentMessages() async {
     final request = await _client.getUrl(
-      Uri.parse('$baseUrl/api/v1/messages/$username/sent'),
+      Uri.parse('$baseUrl/api/v1/messages/sent'),
     );
     _headers.forEach((k, v) => request.headers.set(k, v));
     final response = await request.close();

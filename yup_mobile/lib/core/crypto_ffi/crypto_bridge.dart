@@ -238,13 +238,13 @@ class CryptoBridge {
     return _parseResult(raw);
   }
 
-  String createInboundSession(String theirIdentityKey, String ciphertextB64) {
+  Map<String, dynamic> createInboundSession(String theirIdentityKey, String ciphertextB64) {
     final idPtr = theirIdentityKey.toNativeUtf8();
     final ctPtr = ciphertextB64.toNativeUtf8();
     final raw = _call2(_createInboundSession, idPtr, ctPtr);
     calloc.free(idPtr);
     calloc.free(ctPtr);
-    return _parseResultString(raw);
+    return _parseResult(raw);
   }
 
   String decryptMessage(String sessionId, String ciphertextB64, int messageType) {

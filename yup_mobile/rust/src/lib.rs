@@ -120,8 +120,14 @@ pub fn rust_create_inbound_session(
         .create_inbound_session(SessionConfig::default(), their_key, &pre_key_msg)
         .map_err(|e| format!("inbound session: {}", e))?;
     let session_id = result.session.session_id().to_owned();
-    state.sessions.insert(session_id, Box::new(result.session));
-    Ok(String::from_utf8_lossy(&result.plaintext).to_string())
+    let plaintext = String::from_utf8_lossy(&result.plaintext).to_string();
+    state.sessions.insert(session_id.clone(), Box::new(result.session));
+    // Return both session_id and plaintext so the Dart layer can store the correct session
+    let output = serde_json::json!({
+        "session_id": session_id,
+        "plaintext": plaintext,
+    });
+    Ok(output.to_string())
 }
 
 pub fn rust_decrypt_message(session_id: &str, ciphertext_b64: &str, message_type: usize) -> Result<String, String> {
@@ -148,9 +154,13 @@ pub fn rust_get_fingerprint(their_identity_key: &str) -> Result<String, String> 
     let guard = STATE.lock().unwrap();
     let state = guard.as_ref().ok_or("not initialized")?;
     let our_key = state.account.identity_keys().curve25519.to_base64();
+    // Canonical order: sort both keys lexicographically before hashing
+    // This ensures A->B and B->A produce the same fingerprint.
+    let mut keys = vec![our_key.as_str(), their_identity_key];
+    keys.sort();
     let mut hasher = Sha256::new();
-    hasher.update(our_key.as_bytes());
-    hasher.update(their_identity_key.as_bytes());
+    hasher.update(keys[0].as_bytes());
+    hasher.update(keys[1].as_bytes());
     let hash = hasher.finalize();
     let hex: String = hash.iter().take(16).map(|b| format!("{:02x}", b)).collect();
     let formatted = hex
@@ -325,7 +335,70 @@ pub extern "C" fn yup_unpickle_session(
 
 #[no_mangle]
 pub extern "C" fn yup_free_string(s: *mut c_char) {
-    if !s.is_null() {
-        unsafe { drop(CString::from_raw(s)); }
+	if !s.is_null() {
+		unsafe { drop(CString::from_raw(s)); }
+	}
+}
+
+// ─── Tests ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_account() {
+        let result = rust_generate_account();
+        assert!(result.is_ok());
+        let json = result.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.get("curve25519").unwrap().as_str().unwrap().len() > 0);
+        assert!(parsed.get("ed25519").unwrap().as_str().unwrap().len() > 0);
+    }
+
+    #[test]
+    fn test_create_outbound_session_fails_bad_keys() {
+        rust_generate_account().unwrap();
+        let result = rust_create_outbound_session(
+            "not-a-valid-base64-key!!",
+            "also-not-valid",
+        );
+        // Should fail with bad key format
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_inbound_decrypt_fails_on_tampered_ciphertext() {
+        rust_generate_account().unwrap();
+        let result = rust_create_inbound_session(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "AAAAAA==",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_fingerprint_is_deterministic() {
+        rust_generate_account().unwrap();
+        let key = "test_key_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let fp1 = rust_get_fingerprint(key).unwrap();
+        let fp2 = rust_get_fingerprint(key).unwrap();
+        // Same key + same account = same fingerprint
+        assert_eq!(fp1, fp2);
+    }
+
+    #[test]
+    fn test_pickle_roundtrip() {
+        rust_generate_account().unwrap();
+        let pickle = rust_pickle_account().unwrap();
+        assert!(pickle.len() > 0);
+
+        // Unpickle into a new state
+        let result = rust_unpickle_account(&pickle);
+        assert!(result.is_ok());
+
+        let keys = rust_get_identity_keys().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&keys).unwrap();
+        assert!(parsed.get("curve25519").unwrap().as_str().unwrap().len() > 0);
     }
 }

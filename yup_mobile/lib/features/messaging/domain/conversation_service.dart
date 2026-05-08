@@ -2,6 +2,7 @@ import 'dart:async';
 import '../../../core/networking/api_client.dart';
 import '../../../core/storage/message_dao.dart';
 import '../../key_management/domain/crypto_service.dart';
+import '../data/peer_key_store.dart';
 import '../data/session_store.dart';
 
 class MessageItem {
@@ -9,7 +10,7 @@ class MessageItem {
   final String sender;
   final String text;
   final bool isOutgoing;
-  final String status; // pending, delivered, received
+  final String status;
   final DateTime createdAt;
 
   const MessageItem({
@@ -37,6 +38,7 @@ class ConversationService {
   final ApiClient _api;
   final CryptoService _crypto;
   final SessionStore _sessionStore;
+  final PeerKeyStore _peerKeyStore;
   final MessageDao _messageDao;
   final String _username;
   final List<MessageItem> _messages = [];
@@ -48,9 +50,11 @@ class ConversationService {
 
   final _messageController = StreamController<List<MessageItem>>.broadcast();
   final _errorController = StreamController<String>.broadcast();
+  final _keyChangedController = StreamController<String>.broadcast();
 
   Stream<List<MessageItem>> get messages => _messageController.stream;
   Stream<String> get errors => _errorController.stream;
+  Stream<String> get keyChangedEvents => _keyChangedController.stream;
 
   List<MessageItem> get currentMessages => List.unmodifiable(_messages);
 
@@ -58,11 +62,13 @@ class ConversationService {
     required ApiClient apiClient,
     required CryptoService cryptoService,
     required SessionStore sessionStore,
+    required PeerKeyStore peerKeyStore,
     required MessageDao messageDao,
     required String username,
   })  : _api = apiClient,
         _crypto = cryptoService,
         _sessionStore = sessionStore,
+        _peerKeyStore = peerKeyStore,
         _messageDao = messageDao,
         _username = username;
 
@@ -77,11 +83,21 @@ class ConversationService {
       final theirBundle = await _api.getKeys(recipientUsername);
       final theirKey = theirBundle['curve_key'] as String;
       final theirOtks = theirBundle['one_time_keys'] as List<dynamic>;
-      if (theirOtks.isEmpty) {
-        throw Exception('$recipientUsername has no one-time keys');
-      }
 
       _recipientCurveKey = theirKey;
+
+      // Check for key change
+      final fingerprint = _crypto.getFingerprint(theirKey);
+      final changed = await _peerKeyStore.hasKeyChanged(
+        peerUsername: recipientUsername,
+        newIdentityKey: theirKey,
+        newFingerprint: fingerprint,
+      );
+      if (changed) {
+        _keyChangedController.add(recipientUsername);
+        // Do not proceed with session creation — caller must handle warning
+        throw KeyChangedException(recipientUsername);
+      }
 
       // Load conversation history from local DB
       final history = await _messageDao.getConversation(
@@ -101,6 +117,10 @@ class ConversationService {
         return existingSessionId;
       }
 
+      if (theirOtks.isEmpty) {
+        throw Exception('$recipientUsername has no one-time keys');
+      }
+
       _recipientOtk = theirOtks.first as String;
 
       final sessionInfo = _crypto.createOutboundSession(_recipientCurveKey!, _recipientOtk!);
@@ -109,6 +129,8 @@ class ConversationService {
       await _sessionStore.addSession(_sessionId!, _recipientCurveKey!);
 
       return _sessionId!;
+    } on KeyChangedException {
+      rethrow;
     } catch (e) {
       _errorController.add('Session error: $e');
       rethrow;
@@ -126,7 +148,6 @@ class ConversationService {
       final msgType = encrypted['message_type'] as int;
 
       final env = await _api.sendMessage(
-        sender: _username,
         recipient: recipientUsername,
         ciphertext: ct,
         messageType: msgType,
@@ -145,7 +166,6 @@ class ConversationService {
       _messages.add(msg);
       _messageController.add(List.from(_messages));
 
-      // Persist to local DB
       await _messageDao.insertMessage(msg, _username, _recipientCurveKey!);
     } catch (e) {
       _errorController.add('Send error: $e');
@@ -154,7 +174,7 @@ class ConversationService {
 
   Future<void> pollIncoming() async {
     try {
-      final envs = await _api.getMessages(_username);
+      final envs = await _api.getMessages();
       for (final env in envs) {
         final envMap = env as Map<String, dynamic>;
         final msgId = envMap['id'] as String;
@@ -172,8 +192,13 @@ class ConversationService {
           plaintext = _crypto.decryptMessage(existingSessionId, ct, msgType);
           _sessionId ??= existingSessionId;
         } else {
-          plaintext = _crypto.createInboundSession(senderKey, ct);
-          _sessionId ??= senderKey;
+          // Returns {session_id, plaintext}
+          final inboundResult = _crypto.createInboundSession(senderKey, ct);
+          final inboundSessionId = inboundResult['session_id'] as String;
+          plaintext = inboundResult['plaintext'] as String;
+          _sessionId = inboundSessionId;
+          // Store the actual inbound session keyed by sender's curve key
+          await _sessionStore.addSession(inboundSessionId, senderKey);
         }
 
         final msg = MessageItem(
@@ -188,13 +213,12 @@ class ConversationService {
         _messages.add(msg);
         _messageController.add(List.from(_messages));
 
-        // Persist to local DB
         if (_recipientCurveKey != null) {
           await _messageDao.insertMessage(msg, _username, _recipientCurveKey!);
         }
 
         try {
-          await _api.ackMessage(msgId, _username);
+          await _api.ackMessage(msgId);
         } catch (_) {}
       }
     } catch (_) {}
@@ -202,7 +226,7 @@ class ConversationService {
 
   Future<void> pollSentStatus() async {
     try {
-      final sentEnvs = await _api.getSentMessages(_username);
+      final sentEnvs = await _api.getSentMessages();
       final updatedStatuses = <String, String>{};
       for (final env in sentEnvs) {
         final envMap = env as Map<String, dynamic>;
@@ -217,7 +241,6 @@ class ConversationService {
           final newStatus = updatedStatuses[_messages[i].id];
           if (newStatus != null && newStatus != _messages[i].status) {
             _messages[i] = _messages[i].copyWith(status: newStatus);
-            // Update status in local DB
             await _messageDao.updateStatus(_messages[i].id, newStatus);
             changed = true;
           }
@@ -248,5 +271,14 @@ class ConversationService {
     stopPolling();
     _messageController.close();
     _errorController.close();
+    _keyChangedController.close();
   }
+}
+
+class KeyChangedException implements Exception {
+  final String peerUsername;
+  KeyChangedException(this.peerUsername);
+
+  @override
+  String toString() => 'Key changed for $peerUsername';
 }

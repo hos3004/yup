@@ -40,7 +40,8 @@ class CryptoService {
   }
 
   /// Create an inbound session from the first (pre-key) message.
-  String createInboundSession(
+  /// Returns {session_id, plaintext}.
+  Map<String, dynamic> createInboundSession(
     String theirIdentityKey,
     String ciphertextB64,
   ) {

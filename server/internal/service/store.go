@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"sync"
@@ -11,36 +12,44 @@ import (
 )
 
 type Store struct {
-	mu              sync.RWMutex
-	users           map[string]*model.User
-	devices         map[string]*model.Device         // deviceID -> device
-	keyBundles      map[string]*model.KeyBundle       // username -> latest bundle
-	messages        map[string]*model.Message         // messageID -> message
-	pendingEnvelopes map[string][]string              // username -> pending messageIDs
-	sentMessages    map[string][]string               // username -> sent messageIDs
+	mu               sync.RWMutex
+	users            map[string]*model.User
+	tokens           map[string]string            // token -> username
+	devices          map[string]*model.Device      // deviceID -> device
+	keyBundles       map[string]*model.KeyBundle   // username -> latest bundle
+	consumedOtk      map[string]map[string]bool    // username -> consumed OTK set
+	messages         map[string]*model.Message     // messageID -> message
+	pendingEnvelopes map[string][]string           // username -> pending messageIDs
+	sentMessages     map[string][]string           // username -> sent messageIDs
 }
 
 func NewStore() *Store {
 	return &Store{
 		users:            make(map[string]*model.User),
+		tokens:           make(map[string]string),
 		devices:          make(map[string]*model.Device),
 		keyBundles:       make(map[string]*model.KeyBundle),
+		consumedOtk:      make(map[string]map[string]bool),
 		messages:         make(map[string]*model.Message),
 		pendingEnvelopes: make(map[string][]string),
 		sentMessages:     make(map[string][]string),
 	}
 }
 
-func newID() string {
+func newID() (string, error) {
 	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate ID: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
-func newToken() string {
+func newToken() (string, error) {
 	b := make([]byte, 32)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func (s *Store) RegisterUser(username string) (*model.User, error) {
@@ -51,12 +60,18 @@ func (s *Store) RegisterUser(username string) (*model.User, error) {
 		return nil, fmt.Errorf("username already exists")
 	}
 
+	token, err := newToken()
+	if err != nil {
+		return nil, err
+	}
+
 	user := &model.User{
 		Username:  username,
-		AuthToken: newToken(),
+		AuthToken: token,
 		CreatedAt: time.Now().UTC(),
 	}
 	s.users[username] = user
+	s.tokens[token] = username
 	return user, nil
 }
 
@@ -67,14 +82,24 @@ func (s *Store) GetUser(username string) (*model.User, bool) {
 	return user, ok
 }
 
-func (s *Store) ValidateToken(username, token string) bool {
+// ValidateToken looks up the user by token and returns the username.
+// Uses constant-time comparison for token verification.
+func (s *Store) ValidateToken(token string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	username, ok := s.tokens[token]
+	if !ok {
+		return "", false
+	}
 	user, ok := s.users[username]
 	if !ok {
-		return false
+		return "", false
 	}
-	return user.AuthToken == token
+	// Constant-time comparison
+	if subtle.ConstantTimeCompare([]byte(token), []byte(user.AuthToken)) == 1 {
+		return username, true
+	}
+	return "", false
 }
 
 func (s *Store) UploadKeyBundle(username string, bundle *model.KeyBundle) (*model.KeyBundle, error) {
@@ -85,8 +110,13 @@ func (s *Store) UploadKeyBundle(username string, bundle *model.KeyBundle) (*mode
 		return nil, fmt.Errorf("user not found")
 	}
 
-	bundle.DeviceID = newID()
+	deviceID, err := newID()
+	if err != nil {
+		return nil, err
+	}
+	bundle.DeviceID = deviceID
 	s.keyBundles[username] = bundle
+	s.consumedOtk[username] = make(map[string]bool)
 
 	device := &model.Device{
 		DeviceID:       bundle.DeviceID,
@@ -100,11 +130,65 @@ func (s *Store) UploadKeyBundle(username string, bundle *model.KeyBundle) (*mode
 	return bundle, nil
 }
 
-func (s *Store) GetKeyBundle(username string) (*model.KeyBundle, bool) {
+func (s *Store) GetKeyBundle(username string) (*model.KeyBundle, bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	bundle, ok := s.keyBundles[username]
+	if !ok {
+		return nil, false, ""
+	}
+
+	// Consume exactly one available OTK
+	var chosenOTK string
+	consumed := s.consumedOtk[username]
+	if consumed == nil {
+		consumed = make(map[string]bool)
+		s.consumedOtk[username] = consumed
+	}
+
+	for _, otk := range bundle.OneTimeKeys {
+		if !consumed[otk] {
+			chosenOTK = otk
+			consumed[otk] = true
+			break
+		}
+	}
+
+	responseBundle := &model.KeyBundle{
+		DeviceID:    bundle.DeviceID,
+		CurveKey:    bundle.CurveKey,
+		EdKey:       bundle.EdKey,
+		OneTimeKeys: []string{},
+		Signature:   bundle.Signature,
+	}
+
+	remaining := ""
+	if chosenOTK != "" {
+		responseBundle.OneTimeKeys = []string{chosenOTK}
+	} else {
+		remaining = "no_otk_available"
+	}
+
+	return responseBundle, true, remaining
+}
+
+func (s *Store) AvailableOTKCount(username string) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
 	bundle, ok := s.keyBundles[username]
-	return bundle, ok
+	if !ok {
+		return 0
+	}
+	consumed := s.consumedOtk[username]
+	count := 0
+	for _, otk := range bundle.OneTimeKeys {
+		if !consumed[otk] {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *Store) StoreMessage(sender, recipient, ciphertext string, msgType int, senderKey string) (*model.Envelope, error) {
@@ -115,7 +199,10 @@ func (s *Store) StoreMessage(sender, recipient, ciphertext string, msgType int, 
 		return nil, fmt.Errorf("recipient not found")
 	}
 
-	msgID := newID()
+	msgID, err := newID()
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 
 	msg := &model.Message{
@@ -215,4 +302,23 @@ func (s *Store) GetSentMessages(username string) []*model.Envelope {
 		})
 	}
 	return envs
+}
+
+func (s *Store) DeleteAllUserData(username string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.users[username]; !exists {
+		return fmt.Errorf("user not found")
+	}
+
+	token := s.users[username].AuthToken
+	delete(s.tokens, token)
+	delete(s.users, username)
+	delete(s.keyBundles, username)
+	delete(s.consumedOtk, username)
+	delete(s.pendingEnvelopes, username)
+	delete(s.sentMessages, username)
+
+	return nil
 }

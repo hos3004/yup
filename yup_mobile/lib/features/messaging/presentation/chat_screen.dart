@@ -8,6 +8,7 @@ import '../../../core/storage/message_dao.dart';
 import '../../key_management/domain/crypto_service.dart';
 import '../../verification/data/verification_service.dart';
 import '../../verification/presentation/verification_screen.dart';
+import '../data/peer_key_store.dart';
 import '../data/session_store.dart';
 import '../domain/conversation_service.dart';
 
@@ -34,15 +35,17 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   late final ConversationService _conversation;
   late final SessionStore _sessionStore;
+  late final PeerKeyStore _peerKeyStore;
   late final VerificationService _verificationService;
   late final LocalDatabase _localDatabase;
   late final MessageDao _messageDao;
-  bool _isVerified = false;
+  final bool _isVerified = false;
   final _recipientController = TextEditingController();
   final _messageController = TextEditingController();
   final _messages = <MessageItem>[];
   StreamSubscription? _msgSub;
   StreamSubscription? _errSub;
+  StreamSubscription? _keyChangedSub;
   String? _error;
   String? _activeRecipient;
   bool _connecting = false;
@@ -64,10 +67,13 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     await _sessionStore.load();
 
+    _peerKeyStore = PeerKeyStore(widget.secureStorage, widget.username);
+
     _conversation = ConversationService(
       apiClient: widget.apiClient,
       cryptoService: widget.cryptoService,
       sessionStore: _sessionStore,
+      peerKeyStore: _peerKeyStore,
       messageDao: _messageDao,
       username: widget.username,
     );
@@ -88,7 +94,74 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mounted) setState(() => _error = err);
     });
 
+    _keyChangedSub = _conversation.keyChangedEvents.listen((peerUsername) {
+      if (mounted) _showKeyChangedWarning(peerUsername);
+    });
+
     _conversation.startPolling();
+  }
+
+  Future<void> _showKeyChangedWarning(String peerUsername) async {
+    final action = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Icon(Icons.warning_amber_rounded, size: 48, color: Colors.orange),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Security key changed',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'The security key for $peerUsername has changed. '
+              'This may happen if they reinstalled the app or changed devices, '
+              'but it could also indicate a security risk.',
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'cancel'),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'verify'),
+            child: const Text('View Verification'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, 'accept'),
+            child: const Text('Accept New Key'),
+          ),
+        ],
+      ),
+    );
+
+    if (action == 'cancel') {
+      setState(() => _activeRecipient = null);
+    } else if (action == 'verify') {
+      final peerKey = _conversation.recipientCurveKey;
+      if (peerKey != null && mounted) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => VerificationScreen(
+              peerUsername: peerUsername,
+              peerCurveKey: peerKey,
+              myUsername: widget.username,
+              cryptoService: widget.cryptoService,
+              verificationService: _verificationService,
+            ),
+          ),
+        );
+      }
+    } else if (action == 'accept') {
+      await _peerKeyStore.acceptNewKey(peerUsername);
+      // Retry connecting with the new key
+      _connect();
+    }
   }
 
   Future<void> _connect() async {
@@ -103,8 +176,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
     try {
       await _conversation.startConversation(recipient);
+    } on KeyChangedException {
+      // Warning dialog is shown via stream, no additional error needed
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _connecting = false);
     }
@@ -122,7 +197,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final peerKey = _conversation.recipientCurveKey;
     if (peerKey == null) return;
 
-    final result = await Navigator.of(context).push<bool>(
+    Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => VerificationScreen(
           peerUsername: _activeRecipient!,
@@ -133,19 +208,13 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       ),
     );
-
-    if (result != null && mounted) {
-      setState(() => _isVerified = result);
-    } else if (mounted) {
-      _isVerified = await _verificationService.isVerified(peerKey);
-      if (mounted) setState(() {});
-    }
   }
 
   @override
   void dispose() {
     _msgSub?.cancel();
     _errSub?.cancel();
+    _keyChangedSub?.cancel();
     _conversation.dispose();
     _recipientController.dispose();
     _messageController.dispose();

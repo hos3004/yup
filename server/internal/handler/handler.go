@@ -5,16 +5,21 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/yup/server/internal/middleware"
 	"github.com/yup/server/internal/model"
 	"github.com/yup/server/internal/service"
 )
 
 type Server struct {
 	store *service.Store
+	rl    *middleware.RateLimiter
 }
 
 func New(store *service.Store) *Server {
-	return &Server{store: store}
+	return &Server{
+		store: store,
+		rl:    middleware.NewRateLimiter(30, 60),
+	}
 }
 
 type ErrorResponse struct {
@@ -31,6 +36,8 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, ErrorResponse{Error: msg})
 }
 
+// AuthMiddleware validates Bearer token and passes username to next handler.
+// Derives username from token, NOT from path/body.
 func (s *Server) AuthMiddleware(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
@@ -39,8 +46,8 @@ func (s *Server) AuthMiddleware(next func(http.ResponseWriter, *http.Request, st
 			return
 		}
 		token := strings.TrimPrefix(auth, "Bearer ")
-		username := r.PathValue("username")
-		if !s.store.ValidateToken(username, token) {
+		username, ok := s.store.ValidateToken(token)
+		if !ok {
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
@@ -110,13 +117,23 @@ func (s *Server) UploadKeys(w http.ResponseWriter, r *http.Request, username str
 		writeError(w, http.StatusBadRequest, "invalid key bundle")
 		return
 	}
+	if !isValidBase64(bundle.CurveKey) || !isValidBase64(bundle.EdKey) {
+		writeError(w, http.StatusBadRequest, "invalid key format (must be base64)")
+		return
+	}
 	if len(bundle.CurveKey) > 64 || len(bundle.EdKey) > 64 {
-		writeError(w, http.StatusBadRequest, "invalid key format")
+		writeError(w, http.StatusBadRequest, "invalid key length")
 		return
 	}
 	if len(bundle.OneTimeKeys) > 100 {
 		writeError(w, http.StatusBadRequest, "too many one-time keys")
 		return
+	}
+	for _, otk := range bundle.OneTimeKeys {
+		if !isValidBase64(otk) || len(otk) > 64 {
+			writeError(w, http.StatusBadRequest, "invalid one-time key format")
+			return
+		}
 	}
 	saved, err := s.store.UploadKeyBundle(username, &bundle)
 	if err != nil {
@@ -126,28 +143,36 @@ func (s *Server) UploadKeys(w http.ResponseWriter, r *http.Request, username str
 	writeJSON(w, http.StatusOK, saved)
 }
 
-func (s *Server) GetKeys(w http.ResponseWriter, r *http.Request) {
+func (s *Server) GetKeys(w http.ResponseWriter, r *http.Request, username string) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	username := r.PathValue("username")
-	bundle, ok := s.store.GetKeyBundle(username)
+	targetUser := r.PathValue("username")
+	bundle, ok, remaining := s.store.GetKeyBundle(targetUser)
 	if !ok {
 		writeError(w, http.StatusNotFound, "keys not found for user")
 		return
 	}
-	writeJSON(w, http.StatusOK, bundle)
+	resp := map[string]any{
+		"device_id":          bundle.DeviceID,
+		"curve_key":          bundle.CurveKey,
+		"ed_key":             bundle.EdKey,
+		"one_time_keys":      bundle.OneTimeKeys,
+	}
+	if remaining != "" {
+		resp["no_otk_available"] = true
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
+func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request, sender string) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<18) // 256KB max message
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<18) // 256KB max
 	var body struct {
-		Sender     string `json:"sender"`
 		Recipient  string `json:"recipient"`
 		Ciphertext string `json:"ciphertext"`
 		MsgType    int    `json:"message_type"`
@@ -157,20 +182,27 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid message")
 		return
 	}
-	if len(body.Sender) < 3 || len(body.Sender) > 32 ||
-		len(body.Recipient) < 3 || len(body.Recipient) > 32 {
-		writeError(w, http.StatusBadRequest, "invalid username")
+	if len(body.Recipient) < 3 || len(body.Recipient) > 32 {
+		writeError(w, http.StatusBadRequest, "invalid recipient username")
 		return
 	}
 	if len(body.Ciphertext) == 0 || len(body.Ciphertext) > 1<<17 {
 		writeError(w, http.StatusBadRequest, "invalid ciphertext")
 		return
 	}
+	if !isValidBase64(body.Ciphertext) {
+		writeError(w, http.StatusBadRequest, "invalid ciphertext encoding")
+		return
+	}
 	if body.MsgType < 0 || body.MsgType > 1 {
 		writeError(w, http.StatusBadRequest, "invalid message type")
 		return
 	}
-	env, err := s.store.StoreMessage(body.Sender, body.Recipient, body.Ciphertext, body.MsgType, body.SenderKey)
+	if body.SenderKey != "" && !isValidBase64(body.SenderKey) {
+		writeError(w, http.StatusBadRequest, "invalid sender key encoding")
+		return
+	}
+	env, err := s.store.StoreMessage(sender, body.Recipient, body.Ciphertext, body.MsgType, body.SenderKey)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -178,12 +210,11 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, env)
 }
 
-func (s *Server) GetMessages(w http.ResponseWriter, r *http.Request) {
+func (s *Server) GetMessages(w http.ResponseWriter, r *http.Request, username string) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	username := r.PathValue("username")
 	envs := s.store.GetPendingEnvelopes(username)
 	writeJSON(w, http.StatusOK, envs)
 }
@@ -208,4 +239,43 @@ func (s *Server) GetSentMessages(w http.ResponseWriter, r *http.Request, usernam
 	}
 	envs := s.store.GetSentMessages(username)
 	writeJSON(w, http.StatusOK, envs)
+}
+
+// Simple base64 validation — checks the string only contains base64 characters.
+func isValidBase64(s string) bool {
+	if s == "" {
+		return true
+	}
+	for _, c := range s {
+		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// RateLimit wraps a handler with IP-based rate limiting.
+func (s *Server) RateLimit(next http.HandlerFunc) http.HandlerFunc {
+	return s.rl.Middleware(next, func(r *http.Request) string {
+		ip := r.RemoteAddr
+		if idx := strings.LastIndex(ip, ":"); idx >= 0 {
+			ip = ip[:idx]
+		}
+		return ip
+	})
+}
+
+// RateLimitAuth wraps an authenticated handler with user-based rate limiting.
+func (s *Server) RateLimitAuth(next http.HandlerFunc) http.HandlerFunc {
+	return s.rl.Middleware(next, func(r *http.Request) string {
+		auth := r.Header.Get("Authorization")
+		if strings.HasPrefix(auth, "Bearer ") {
+			return strings.TrimPrefix(auth, "Bearer ")
+		}
+		ip := r.RemoteAddr
+		if idx := strings.LastIndex(ip, ":"); idx >= 0 {
+			ip = ip[:idx]
+		}
+		return ip
+	})
 }

@@ -69,14 +69,24 @@ class SecureStorageService {
     await _storage.delete(key: key);
   }
 
-  Future<void> clearUserData(String username) async {
+  /// Full destructive clear: removes auth token, account pickle,
+  /// identity keys, sessions, peer keys, DB passphrase, and active username.
+  Future<void> clearAllUserData(String username) async {
     await Future.wait([
       _storage.delete(key: 'auth_token:$username'),
       _storage.delete(key: 'account_pickle:$username'),
       _storage.delete(key: 'identity_curve25519:$username'),
       _storage.delete(key: 'identity_ed25519:$username'),
       _storage.delete(key: 'sessions:$username'),
+      _storage.delete(key: 'peer_keys:$username'),
+      _storage.delete(key: 'verified_contacts:$username'),
+      _storage.delete(key: 'db_passphrase'),
       _storage.delete(key: 'active_username'),
     ]);
+  }
+
+  /// Old name kept for backward compat — calls clearAllUserData.
+  Future<void> clearUserData(String username) async {
+    await clearAllUserData(username);
   }
 }

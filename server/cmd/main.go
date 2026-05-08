@@ -15,14 +15,16 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("POST /api/v1/users", h.RegisterUser)
-	mux.HandleFunc("GET /api/v1/users/{username}", h.GetUser)
-	mux.HandleFunc("PUT /api/v1/keys/{username}", h.AuthMiddleware(h.UploadKeys))
-	mux.HandleFunc("GET /api/v1/keys/{username}", h.GetKeys)
-	mux.HandleFunc("POST /api/v1/messages", h.SendMessage)
-	mux.HandleFunc("GET /api/v1/messages/{username}", h.GetMessages)
+	// Public route with rate limiting
+	mux.HandleFunc("POST /api/v1/users", h.RateLimit(h.RegisterUser))
+
+	// Authenticated routes with rate limiting
+	mux.HandleFunc("PUT /api/v1/keys/{username}", h.RateLimitAuth(h.AuthMiddleware(h.UploadKeys)))
+	mux.HandleFunc("GET /api/v1/keys/{username}", h.RateLimitAuth(h.AuthMiddleware(h.GetKeys)))
+	mux.HandleFunc("POST /api/v1/messages", h.RateLimitAuth(h.AuthMiddleware(h.SendMessage)))
+	mux.HandleFunc("GET /api/v1/messages", h.RateLimitAuth(h.AuthMiddleware(h.GetMessages)))
 	mux.HandleFunc("POST /api/v1/messages/{messageID}/ack", h.AuthMiddleware(h.AckMessage))
-	mux.HandleFunc("GET /api/v1/messages/{username}/sent", h.AuthMiddleware(h.GetSentMessages))
+	mux.HandleFunc("GET /api/v1/messages/sent", h.AuthMiddleware(h.GetSentMessages))
 
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
