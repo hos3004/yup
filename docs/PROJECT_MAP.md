@@ -15,7 +15,7 @@
 | **Rust (Crypto FFI)** | Rust toolchain | 1.92.0 (stable-gnu) | [blog.rust-lang.org](https://blog.rust-lang.org) | ⚠️ Below target (target: 1.95.0) |
 | **Crypto Library** | Vodozemac (Olm) | 0.10.0 | [crates.io](https://crates.io/crates/vodozemac) | ✅ Verified |
 | **Backend** | Go | 1.26.2 | [go.dev](https://go.dev) | ✅ Verified |
-| **Database** | PostgreSQL | — | — | ⏳ **Not yet implemented** — server uses in-memory storage |
+| **Database** | PostgreSQL | 17 | [postgresql.org](https://www.postgresql.org) | ✅ Integrated via PostgresStore (runs in Docker) |
 | **Realtime / Queue** | Redis | — | — | ⏳ **Not yet implemented** |
 | **Local Storage** | SQLCipher | 4.15.0 | [github.com/sqlcipher](https://github.com/sqlcipher/sqlcipher) | ✅ Schema created and used |
 | **Secure Key Storage** | Android Keystore / iOS Keychain | — | platform-native | ✅ Implemented via flutter_secure_storage |
@@ -70,16 +70,19 @@ mobile/lib/
 ```
 server/
 ├── cmd/
-│   └── main.go                   # Entry point with rate-limited routes
+│   └── main.go                   # Entry point with rate-limited routes, selects store by DATABASE_URL
 ├── internal/
-│   ├── handler/                  # HTTP handlers + auth middleware (token-based)
+│   ├── handler/                  # HTTP handlers + auth middleware (uses DataStore interface)
 │   ├── middleware/               # Rate limiting (IP and user-based)
-│   ├── service/                  # In-memory store with OTK consumption
+│   ├── service/
+│   │   ├── store.go              # DataStore interface + InMemoryStore (fallback/tests)
+│   │   └── postgres_store.go     # PostgresStore — production PostgreSQL-backed implementation
 │   ├── model/                    # Domain models (User, Device, KeyBundle, Envelope)
+├── migrations/                   # SQL migration files (golang-migrate compatible)
+├── docker-compose.yml            # PostgreSQL 17 + server
+├── Dockerfile                    # Multi-stage production build
+├── Makefile                      # db-up/down/migrate/run/test targets
 ├── go.mod
-```
-
-> ⚠️ **Critical gap:** The server uses in-memory storage. All data is lost on restart. PostgreSQL is not yet integrated. This is a **blocker** for any closed beta deployment.
 
 ### Crypto Architecture
 
@@ -106,11 +109,6 @@ Protocols: Olm session establishment, SAS verification (fingerprint comparison)
 ---
 
 ## [KNOWN GAPS]
-
-### Server Persistence (BLOCKER for Closed Beta)
-- **Issue:** Server uses in-memory maps. All data lost on restart.
-- **Impact:** Cannot run any closed beta.
-- **Required:** PostgreSQL integration with SQL migrations.
 
 ### Key Changed Warning — Detection Implemented (UI Pending Full Integration)
 - **Issue:** Previously the app silently accepted key changes.
@@ -145,5 +143,5 @@ Protocols: Olm session establishment, SAS verification (fingerprint comparison)
 | M6 | MVP Hardening | ❌ Mostly Not Done |
 | M6-FIX | Project Consistency & Readiness Cleanup | ✅ Completed |
 | **M7** | **Security Correctness & Auth Hardening** | **✅ Completed (Internal Alpha)** |
-| M8 | PostgreSQL Persistence | ⏳ Not Started |
+| M8 | PostgreSQL Persistence | ✅ Completed |
 | M9 | Security Verification & Evidence Pack | ⏳ Not Started |

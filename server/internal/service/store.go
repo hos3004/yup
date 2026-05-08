@@ -1,9 +1,7 @@
 package service
 
 import (
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -11,7 +9,22 @@ import (
 	"github.com/yup/server/internal/model"
 )
 
-type Store struct {
+// DataStore defines the persistence interface for the YUP server.
+type DataStore interface {
+	RegisterUser(username string) (*model.User, error)
+	GetUser(username string) (*model.User, bool)
+	ValidateToken(token string) (string, bool)
+	UploadKeyBundle(username string, bundle *model.KeyBundle) (*model.KeyBundle, error)
+	GetKeyBundle(username string) (*model.KeyBundle, bool, string)
+	AvailableOTKCount(username string) int
+	StoreMessage(sender, recipient, ciphertext string, msgType int, senderKey string) (*model.Envelope, error)
+	GetPendingEnvelopes(username string) []*model.Envelope
+	AckMessage(messageID, username string) error
+	GetSentMessages(username string) []*model.Envelope
+	DeleteAllUserData(username string) error
+}
+
+type InMemoryStore struct {
 	mu               sync.RWMutex
 	users            map[string]*model.User
 	tokens           map[string]string            // token -> username
@@ -23,8 +36,8 @@ type Store struct {
 	sentMessages     map[string][]string           // username -> sent messageIDs
 }
 
-func NewStore() *Store {
-	return &Store{
+func NewInMemoryStore() *InMemoryStore {
+	return &InMemoryStore{
 		users:            make(map[string]*model.User),
 		tokens:           make(map[string]string),
 		devices:          make(map[string]*model.Device),
@@ -36,23 +49,7 @@ func NewStore() *Store {
 	}
 }
 
-func newID() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate ID: %w", err)
-	}
-	return hex.EncodeToString(b), nil
-}
-
-func newToken() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate token: %w", err)
-	}
-	return hex.EncodeToString(b), nil
-}
-
-func (s *Store) RegisterUser(username string) (*model.User, error) {
+func (s *InMemoryStore) RegisterUser(username string) (*model.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -60,7 +57,7 @@ func (s *Store) RegisterUser(username string) (*model.User, error) {
 		return nil, fmt.Errorf("username already exists")
 	}
 
-	token, err := newToken()
+	token, err := generateToken()
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +72,7 @@ func (s *Store) RegisterUser(username string) (*model.User, error) {
 	return user, nil
 }
 
-func (s *Store) GetUser(username string) (*model.User, bool) {
+func (s *InMemoryStore) GetUser(username string) (*model.User, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	user, ok := s.users[username]
@@ -84,7 +81,7 @@ func (s *Store) GetUser(username string) (*model.User, bool) {
 
 // ValidateToken looks up the user by token and returns the username.
 // Uses constant-time comparison for token verification.
-func (s *Store) ValidateToken(token string) (string, bool) {
+func (s *InMemoryStore) ValidateToken(token string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	username, ok := s.tokens[token]
@@ -102,7 +99,7 @@ func (s *Store) ValidateToken(token string) (string, bool) {
 	return "", false
 }
 
-func (s *Store) UploadKeyBundle(username string, bundle *model.KeyBundle) (*model.KeyBundle, error) {
+func (s *InMemoryStore) UploadKeyBundle(username string, bundle *model.KeyBundle) (*model.KeyBundle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -110,7 +107,7 @@ func (s *Store) UploadKeyBundle(username string, bundle *model.KeyBundle) (*mode
 		return nil, fmt.Errorf("user not found")
 	}
 
-	deviceID, err := newID()
+	deviceID, err := generateID()
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +127,7 @@ func (s *Store) UploadKeyBundle(username string, bundle *model.KeyBundle) (*mode
 	return bundle, nil
 }
 
-func (s *Store) GetKeyBundle(username string) (*model.KeyBundle, bool, string) {
+func (s *InMemoryStore) GetKeyBundle(username string) (*model.KeyBundle, bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -173,7 +170,7 @@ func (s *Store) GetKeyBundle(username string) (*model.KeyBundle, bool, string) {
 	return responseBundle, true, remaining
 }
 
-func (s *Store) AvailableOTKCount(username string) int {
+func (s *InMemoryStore) AvailableOTKCount(username string) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -191,7 +188,7 @@ func (s *Store) AvailableOTKCount(username string) int {
 	return count
 }
 
-func (s *Store) StoreMessage(sender, recipient, ciphertext string, msgType int, senderKey string) (*model.Envelope, error) {
+func (s *InMemoryStore) StoreMessage(sender, recipient, ciphertext string, msgType int, senderKey string) (*model.Envelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -199,7 +196,7 @@ func (s *Store) StoreMessage(sender, recipient, ciphertext string, msgType int, 
 		return nil, fmt.Errorf("recipient not found")
 	}
 
-	msgID, err := newID()
+	msgID, err := generateID()
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +228,7 @@ func (s *Store) StoreMessage(sender, recipient, ciphertext string, msgType int, 
 	}, nil
 }
 
-func (s *Store) GetPendingEnvelopes(username string) []*model.Envelope {
+func (s *InMemoryStore) GetPendingEnvelopes(username string) []*model.Envelope {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -260,7 +257,7 @@ func (s *Store) GetPendingEnvelopes(username string) []*model.Envelope {
 	return envs
 }
 
-func (s *Store) AckMessage(messageID, username string) error {
+func (s *InMemoryStore) AckMessage(messageID, username string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -280,7 +277,7 @@ func (s *Store) AckMessage(messageID, username string) error {
 	return nil
 }
 
-func (s *Store) GetSentMessages(username string) []*model.Envelope {
+func (s *InMemoryStore) GetSentMessages(username string) []*model.Envelope {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -304,7 +301,7 @@ func (s *Store) GetSentMessages(username string) []*model.Envelope {
 	return envs
 }
 
-func (s *Store) DeleteAllUserData(username string) error {
+func (s *InMemoryStore) DeleteAllUserData(username string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

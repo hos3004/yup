@@ -5,3 +5,4 @@ This directory contains task definitions, milestone tracking, and completion rep
 | File | Description |
 |------|-------------|
 | M7_SECURITY_HARDENING.md | M7 — Security Correctness & Server Auth Hardening report |
+| M8_PERSISTENCE.md | M8 — PostgreSQL Persistence Foundation report |

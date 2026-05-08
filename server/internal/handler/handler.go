@@ -11,11 +11,11 @@ import (
 )
 
 type Server struct {
-	store *service.Store
+	store service.DataStore
 	rl    *middleware.RateLimiter
 }
 
-func New(store *service.Store) *Server {
+func New(store service.DataStore) *Server {
 	return &Server{
 		store: store,
 		rl:    middleware.NewRateLimiter(30, 60),

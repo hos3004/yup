@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS one_time_keys;
+DROP TABLE IF EXISTS key_bundles;
+DROP TABLE IF EXISTS users;

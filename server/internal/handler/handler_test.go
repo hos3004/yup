@@ -13,7 +13,7 @@ import (
 )
 
 func newTestServer() *Server {
-	return New(service.NewStore())
+	return New(service.NewInMemoryStore())
 }
 
 func registerUser(t *testing.T, s *Server, username string) string {

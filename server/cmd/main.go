@@ -9,8 +9,24 @@ import (
 	"github.com/yup/server/internal/service"
 )
 
+// initStore returns the appropriate DataStore based on environment.
+// If DATABASE_URL is set, it returns a PostgresStore; otherwise, InMemoryStore.
+func initStore() service.DataStore {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL != "" {
+		store, err := service.NewPostgresStore(dbURL)
+		if err != nil {
+			log.Fatalf("failed to connect to postgres: %v", err)
+		}
+		log.Println("using PostgresStore")
+		return store
+	}
+	log.Println("using InMemoryStore (DATABASE_URL not set)")
+	return service.NewInMemoryStore()
+}
+
 func main() {
-	store := service.NewStore()
+	store := initStore()
 	h := handler.New(store)
 
 	mux := http.NewServeMux()
