@@ -1,0 +1,44 @@
+# Rust
+yup_mobile/rust/target/
+
+# Flutter/Dart
+yup_mobile/.dart_tool/
+yup_mobile/.packages
+yup_mobile/.pub/
+yup_mobile/build/
+yup_mobile/.flutter-plugins*
+yup_mobile/pubspec.lock
+
+# Android
+yup_mobile/android/.gradle/
+yup_mobile/android/app/build/
+yup_mobile/android/build/
+yup_mobile/android/local.properties
+yup_mobile/android/key.properties
+
+# iOS
+yup_mobile/ios/.symlinks/
+yup_mobile/ios/Pods/
+yup_mobile/ios/Runner.xcodeproj/xcuserdata/
+
+# Go binaries
+server/main.exe
+server/yup-server.exe
+server/*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.env.local
+
+# Agent skills
+.agents/
