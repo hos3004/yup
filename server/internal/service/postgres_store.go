@@ -322,6 +322,21 @@ func (s *PostgresStore) GetKeyBundle(username string) (*model.KeyBundle, bool, s
 	return respBundle, true, remaining
 }
 
+func (s *PostgresStore) GetCurveKey(username string) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var curveKey string
+	err := s.pool.QueryRow(ctx,
+		`SELECT curve_key FROM key_bundles WHERE username = $1`,
+		username,
+	).Scan(&curveKey)
+	if err != nil {
+		return "", false
+	}
+	return curveKey, true
+}
+
 func (s *PostgresStore) AvailableOTKCount(username string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

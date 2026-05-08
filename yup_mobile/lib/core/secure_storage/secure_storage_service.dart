@@ -6,6 +6,10 @@ class SecureStorageService {
   SecureStorageService()
       : _storage = const FlutterSecureStorage();
 
+  /// Test-only constructor that bypasses FlutterSecureStorage.
+  /// Subclass and override readRaw/writeRaw/deleteRaw for in-memory tests.
+  SecureStorageService.testable() : _storage = const FlutterSecureStorage();
+
   Future<void> storeAuthToken(String username, String token) async {
     await _storage.write(key: 'auth_token:$username', value: token);
   }

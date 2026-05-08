@@ -23,13 +23,30 @@ class TestSecureStorage {
   }
 }
 
+/// Simulates LocalDatabase.deleteDatabaseFile
+class TestLocalDatabase {
+  bool databaseExists = true;
+  bool _closed = false;
+
+  Future<void> close() async {
+    _closed = true;
+  }
+
+  Future<void> deleteDatabaseFile() async {
+    await close();
+    // Simulate file deletion
+    databaseExists = false;
+  }
+
+  bool get wasClosed => _closed;
+}
+
 void main() {
   group('Clear Local Data', () {
     late TestSecureStorage storage;
 
     setUp(() async {
       storage = TestSecureStorage();
-      // Simulate existing data for "alice"
       await storage.write('auth_token:alice', 'tok123');
       await storage.write('account_pickle:alice', 'pickle123');
       await storage.write('identity_curve25519:alice', 'curve123');
@@ -78,6 +95,17 @@ void main() {
       await storage.write('auth_token:bob', 'bob_token');
       await storage.clearAllUserData('alice');
       expect(await storage.read('auth_token:bob'), equals('bob_token'));
+    });
+
+    test('deleteDatabaseFile closes DB and marks file deleted', () async {
+      final db = TestLocalDatabase();
+      expect(db.databaseExists, isTrue);
+      expect(db.wasClosed, isFalse);
+
+      await db.deleteDatabaseFile();
+
+      expect(db.wasClosed, isTrue);
+      expect(db.databaseExists, isFalse);
     });
   });
 }

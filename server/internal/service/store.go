@@ -16,6 +16,7 @@ type DataStore interface {
 	ValidateToken(token string) (string, bool)
 	UploadKeyBundle(username string, bundle *model.KeyBundle) (*model.KeyBundle, error)
 	GetKeyBundle(username string) (*model.KeyBundle, bool, string)
+	GetCurveKey(username string) (string, bool)
 	AvailableOTKCount(username string) int
 	StoreMessage(sender, recipient, ciphertext string, msgType int, senderKey string) (*model.Envelope, error)
 	GetPendingEnvelopes(username string) []*model.Envelope
@@ -168,6 +169,16 @@ func (s *InMemoryStore) GetKeyBundle(username string) (*model.KeyBundle, bool, s
 	}
 
 	return responseBundle, true, remaining
+}
+
+func (s *InMemoryStore) GetCurveKey(username string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	bundle, ok := s.keyBundles[username]
+	if !ok {
+		return "", false
+	}
+	return bundle.CurveKey, true
 }
 
 func (s *InMemoryStore) AvailableOTKCount(username string) int {

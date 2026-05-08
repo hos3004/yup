@@ -1,7 +1,7 @@
 # PROJECT_MAP — E2EE Secure Messaging (YUP)
 
-> **Status:** Internal Alpha, Security-Hardened — NOT closed-beta-ready
-> **Last updated:** 2026-05-09 (M9 verified)
+> **Status:** Internal Alpha, Security-Hardened
+> **Last updated:** 2026-05-09 (M7-FIX verified)
 > **Architecture style:** Olm E2EE via Vodozemac (verified), Matrix-style session management
 
 ---
@@ -143,6 +143,7 @@ Protocols: Olm session establishment, SAS verification (fingerprint comparison)
 | M5 | Local Secure Storage | ⚠️ Partially Done |
 | M6 | MVP Hardening | ❌ Mostly Not Done |
 | M6-FIX | Project Consistency & Readiness Cleanup | ✅ Completed |
-| **M7** | **Security Correctness & Auth Hardening** | **✅ Completed (Internal Alpha)** |
+| **M7** | **Security Correctness & Auth Hardening** | **✅ Completed** |
+| **M7-FIX** | **Reaudit Blocking Fixes (6 blockers)** | **✅ All 6 resolved** |
 | M8 | PostgreSQL Persistence | ✅ Completed |
 | M9 | Security Verification & Evidence Pack | ✅ Completed |

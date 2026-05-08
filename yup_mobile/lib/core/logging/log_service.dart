@@ -9,9 +9,12 @@ class LogService {
   static final RegExp _hexTokenPattern = RegExp(r'[a-f0-9]{32,}', caseSensitive: false);
   // Redact JSON fields containing sensitive data
   static final RegExp _sensitiveJsonField = RegExp(
-    r'"(token|auth_token|private|pickle|ciphertext|session_key)"\s*:\s*"[^"]{8,}"',
+    r'"(account_pickle|token|auth_token|private|pickle|ciphertext|session_key)"\s*:\s*"(?:[^"\\]|\\.){8,}"',
     caseSensitive: false,
   );
+
+  /// Exposed for testing — applies the same redaction logic.
+  static String redactForLog(String message) => _redact(message);
 
   static String _redact(String message) {
     var result = message;
@@ -42,14 +45,10 @@ class LogService {
       sb.write(_redact(error.toString()));
     }
     if (stack != null) {
-      sb.write(' | stack: <REDACTED_STACK>');
+      sb.write(' | stack: ');
+      sb.write(_redact(stack.toString()));
     }
-    developer.log(
-      sb.toString(),
-      name: 'YUP',
-      level: 1000,
-      error: error,
-      stackTrace: stack,
-    );
+    // Never pass raw error or stackTrace to developer.log — they may contain secrets.
+    developer.log(sb.toString(), name: 'YUP', level: 1000);
   }
 }

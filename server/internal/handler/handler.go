@@ -202,6 +202,26 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request, sender stri
 		writeError(w, http.StatusBadRequest, "invalid sender key encoding")
 		return
 	}
+	// Validate sender_key against authenticated sender's registered curve key
+	if body.SenderKey != "" {
+		registeredKey, ok := s.store.GetCurveKey(sender)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "sender has not uploaded keys")
+			return
+		}
+		if body.SenderKey != registeredKey {
+			writeError(w, http.StatusForbidden, "sender key does not match registered key")
+			return
+		}
+	} else {
+		// Derive sender_key from registered key bundle if not provided
+		registeredKey, ok := s.store.GetCurveKey(sender)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "sender has not uploaded keys")
+			return
+		}
+		body.SenderKey = registeredKey
+	}
 	env, err := s.store.StoreMessage(sender, body.Recipient, body.Ciphertext, body.MsgType, body.SenderKey)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
