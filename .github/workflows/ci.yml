@@ -1,9 +1,9 @@
 name: CI
 
 on:
-  push:
-    branches: [master, m-ci-build-matrix]
   pull_request:
+    branches: [master]
+  push:
     branches: [master]
 
 concurrency:
