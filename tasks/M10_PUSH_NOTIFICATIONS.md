@@ -1,112 +1,72 @@
-# M10 — Push Notifications (FCM)
+# M10 - Push Notifications (FCM)
 
-> **Date:** 2026-05-09
-> **Project:** YUP E2EE Secure Messaging
-> **Test Suite:** All server tests passing (handler + service)
+Date: 2026-05-10
+
+Status: Internal Alpha stabilized. This is not a Closed Beta readiness claim.
 
 ## Summary
 
-Push notification infrastructure implemented using Firebase Cloud Messaging (FCM). The server sends data-only push notifications when a message is stored, replacing the need for constant polling. The Flutter client registers its FCM token on startup and uses incoming pushes to trigger immediate message fetches, with adaptive polling as a fallback.
+Push notification infrastructure is implemented using Firebase Cloud Messaging (FCM). The server sends data-only push notifications when a message is stored. The Flutter client initializes Firebase at startup, but registers its FCM token with the YUP server only after registration/session restore has established auth.
 
 ## Architecture
 
-```
-[Flutter Client]                    [Server]
-     │                                  │
-     │  1. Register FCM token           │
-     │  POST /api/v1/devices ─────────> │
-     │                                  │
-     │  2. Alice sends message          │
-     │  POST /api/v1/messages ────────> │
-     │                                  │── StoreMessage(sender, recipient, ...)
-     │                                  │── GetDeviceTokens(recipient)
-     │                                  │── SendPush (async, data-only)
-     │                                  │
-     │  3. Push received (foreground)   │
-     │  onMessage handler ──────────>   │
-     │  Trigger pollIncoming()          │
-     │  GET /api/v1/messages ────────>  │
-     │                                  │
-     │  4. Fallback: adaptive polling   │
-     │  (3s-30s interval)               │
+```text
+Flutter client                         Server
+1. Firebase.initializeApp()
+2. Register or restore session
+3. PushService.initialize()
+4. POST /api/v1/devices with bearer token
+5. POST /api/v1/messages
+6. StoreMessage(sender, recipient, ...)
+7. GetDeviceTokens(recipient)
+8. SendPush async, data-only payload
+9. Foreground push triggers message fetch
 ```
 
-## Server Changes
+## Server
 
-### DataStore Interface (store.go:27-28)
-- `RegisterDeviceToken(username, token, platform string) error`
-- `GetDeviceTokens(username string) ([]string, error)`
+- `DataStore.RegisterDeviceToken(username, token, platform string) error`
+- `DataStore.GetDeviceTokens(username string) ([]string, error)`
+- `InMemoryStore` stores tokens in memory and clears them on user data deletion.
+- `PostgresStore` stores tokens in `device_tokens` with `UNIQUE(username, token)`.
+- `POST /api/v1/devices` is auth-protected and rate-limited.
+- `SendMessage` sends data-only push after message storage.
+- No plaintext message content is included in the push payload.
 
-### InMemoryStore
-- New `deviceTokens` field: `map[string]map[string]*model.DeviceToken` (username → token → DeviceToken)
-- `RegisterDeviceToken`: Upserts with platform and timestamps
-- `GetDeviceTokens`: Returns all token strings for a user
-- `DeleteAllUserData`: Cleans up device tokens on user deletion
+## Flutter / Android
 
-### PostgresStore (postgres_store.go)
-- Inline migration creates `device_tokens` table:
-  - `id BIGSERIAL PK`, `username FK`, `token`, `platform`, `created_at`, `updated_at`
-  - `UNIQUE(username, token)` constraint
-  - Index on `username`
-- `RegisterDeviceToken`: `INSERT ... ON CONFLICT (username, token) DO UPDATE`
-- `GetDeviceTokens`: `SELECT token FROM device_tokens WHERE username = $1`
+- `firebase_core` and `firebase_messaging` are included.
+- Android `applicationId` is `yup.hossam.com`.
+- `google-services.json` package name is `yup.hossam.com`.
+- `Firebase.initializeApp()` runs in `main.dart`.
+- `services.push.initialize()` runs from the registration/session-restore callback in `router.dart`.
+- `PushService.initialize()` requests permission, gets the FCM token, registers it with the server, listens for token refresh, and exposes `pushTriggers`.
 
-### Migration File
-- `migrations/000003_push_notifications.up.sql`: Standalone SQL for external migration tools
-
-### Notifier Package (notifier/notifier.go — new)
-- `Notifier` interface with `SendPush(ctx, tokens, data) (int, error)`
-- `fcmNotifier`: Firebase Admin SDK implementation using `messaging.SendEachForMulticast`
-- `noopNotifier`: No-op fallback when `GOOGLE_APPLICATION_CREDENTIALS` not set
-- Auto-detects FCM configuration via environment variable
-
-### Handler (handler.go)
-- `Server` struct gains `notifier.Notifier` field
-- `SendMessage`: After successful `StoreMessage`, asynchronously looks up recipient's device tokens and sends a data-only push with `{"type": "new_message", "sender": "<username>"}`
-- `RegisterDevice` handler in `device.go` (new): Auth-protected `POST /api/v1/devices`
-
-### Route (cmd/main.go)
-- `POST /api/v1/devices` — rate-limited, auth-protected
-
-## Flutter/Android Changes
-
-### Dependencies (pubspec.yaml)
-- `firebase_core: ^3.12.0`
-- `firebase_messaging: ^15.2.0`
-
-### Gradle
-- Project-level `android/build.gradle.kts`: Google Services plugin `4.4.2`
-- App-level `android/app/build.gradle.kts`: `com.google.gms.google-services` plugin
-
-### Android Manifest
-- `POST_NOTIFICATIONS` permission for Android 13+
-
-### PushService (lib/core/push/push_service.dart — new)
-- Initializes FCM, requests permissions, gets/registers device token
-- Listens for token refresh and re-registers
-- Listens for foreground `onMessage` and emits `pushTriggers` stream on `"new_message"` type
-
-### ConversationService
-- Accepts optional `pushTriggers` stream parameter
-- On push trigger: resets poll interval to minimum and immediately runs poll cycle
-- Cleans up `_pushSubscription` on dispose
-
-### Service Container & Router
-- `AppServices` includes `PushService`
-- Router passes `services.push` to `ChatScreen`
-
-### App Entry Point (main.dart)
-- `Firebase.initializeApp()` before app startup
-- `services.push.initialize()` registers FCM token
-
-## Prerequisites (Manual Setup)
+## Manual Prerequisites
 
 | Requirement | Location |
-|-------------|----------|
-| Firebase project with Cloud Messaging enabled | [Firebase Console](https://console.firebase.google.com) |
+| --- | --- |
+| Firebase project with Cloud Messaging enabled | Firebase Console |
 | `google-services.json` | `yup_mobile/android/app/google-services.json` |
-| `GOOGLE_APPLICATION_CREDENTIALS` env var | Server environment (service account JSON path) |
+| Service-account JSON | Server environment for real FCM delivery |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Server environment variable |
 
-## Test Suite
+## Verification
 
-119/119 tests passing (same as pre-M10 baseline) — no regressions.
+Current command evidence is recorded in `docs/M9_M10_STABILIZATION_REPORT.md`.
+
+Latest verified run:
+
+- Go unit/vet/build: PASS.
+- PostgreSQL integration with `DATABASE_URL_TEST`: PASS.
+- `dart analyze lib/`: PASS.
+- `flutter analyze`: PASS.
+- `flutter test`: 56/56 PASS.
+- Rust stable-gnu tests/builds: PASS.
+- Android x64 and arm64 release APK builds: PASS.
+
+## Remaining Before Closed Beta
+
+- Real FCM delivery with service-account credentials must be smoke-tested.
+- Foreground/background/resume notification behavior must be captured on device or emulator.
+- Push payload capture must prove no plaintext, bearer token, private key, session key, pickle, or SQLCipher passphrase is present.

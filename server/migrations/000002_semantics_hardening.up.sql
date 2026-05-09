@@ -12,8 +12,10 @@ BEGIN
 END $$;
 
 -- Add foreign keys for messages
+ALTER TABLE messages DROP CONSTRAINT IF EXISTS fk_messages_sender;
 ALTER TABLE messages ADD CONSTRAINT fk_messages_sender
     FOREIGN KEY (sender_username) REFERENCES users(username) ON DELETE CASCADE;
+ALTER TABLE messages DROP CONSTRAINT IF EXISTS fk_messages_recipient;
 ALTER TABLE messages ADD CONSTRAINT fk_messages_recipient
     FOREIGN KEY (recipient_username) REFERENCES users(username) ON DELETE CASCADE;
 

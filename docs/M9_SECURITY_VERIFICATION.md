@@ -2,8 +2,10 @@
 
 > **Date:** 2026-05-09
 > **Project:** YUP E2EE Secure Messaging
-> **Classification:** Internal Alpha, Security-Hardened
-> **Test Suite:** 99/99 tests passing (58 Go + 36 Flutter/Dart + 5 Rust)
+> **Classification:** Internal Alpha - M9/M10 stabilized
+> **Test Suite:** Historical M9 evidence; see `docs/M9_M10_STABILIZATION_REPORT.md` for current 2026-05-10 command output.
+
+> **Supersession note:** This file is retained as the M9 security evidence pack. The current M9/M10 acceptance evidence is `docs/M9_M10_STABILIZATION_REPORT.md`.
 
 ---
 
@@ -305,7 +307,7 @@ Each claim is mapped to its implementation evidence and test verification.
 | `cargo +stable-gnu build --release --target aarch64-linux-android` | ✅ PASS | 1,277,568 bytes .so |
 | `cargo build --release` (MSVC host) | ❌ FAIL | LNK1104: msvcrt.lib missing |
 
-**Total tests: 99/99 PASS (58 Go + 36 Flutter/Dart + 5 Rust)**
+**Historical M9 total:** superseded by `docs/M9_M10_STABILIZATION_REPORT.md`, which records the current 2026-05-10 command output.
 
 ---
 

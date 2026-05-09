@@ -90,6 +90,7 @@ DROP INDEX IF EXISTS idx_otk_username_consumed;
 CREATE INDEX IF NOT EXISTS idx_otk_username_consumed ON one_time_keys(username, consumed, consumed_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_otk_unique_username_key ON one_time_keys(username, key_value);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS token_hash VARCHAR(64) NOT NULL DEFAULT '';
+ALTER TABLE users DROP COLUMN IF EXISTS auth_token;
 ALTER TABLE messages DROP CONSTRAINT IF EXISTS fk_messages_sender;
 ALTER TABLE messages ADD CONSTRAINT fk_messages_sender FOREIGN KEY (sender_username) REFERENCES users(username) ON DELETE CASCADE;
 ALTER TABLE messages DROP CONSTRAINT IF EXISTS fk_messages_recipient;

@@ -1,7 +1,7 @@
 # PROJECT_MAP — E2EE Secure Messaging (YUP)
 
-> **Status:** Internal Alpha, Security-Hardened
-> **Last updated:** 2026-05-09 (M7-FIX verified)
+> **Status:** Internal Alpha - M9/M10 stabilized
+> **Last updated:** 2026-05-10 (M9/M10 final verification)
 > **Architecture style:** Olm E2EE via Vodozemac (verified), Matrix-style session management
 
 ---
@@ -46,8 +46,8 @@ mobile/lib/
 │   │   └── presentation/         # (empty — no UI, background service)
 │   ├── messaging/
 │   │   ├── data/                 # SessionStore, PeerKeyStore
-│   │   ├── domain/               # ConversationService (1:1), GroupService (Megolm groups)
-│   │   └── presentation/         # ChatScreen, GroupListScreen, GroupChatScreen, CreateGroupScreen
+│   │   ├── domain/               # ConversationService (1:1)
+│   │   └── presentation/         # ChatScreen
 │   ├── verification/
 │   │   ├── data/                 # VerificationService
 │   │   ├── domain/               # (empty)
@@ -89,17 +89,15 @@ server/
 ```
 Private Keys ─── NEVER leave the device
 
-Library: Vodozemac 0.10 (Olm + Megolm verified)
+Library: Vodozemac 0.10 (Olm verified)
     └── C FFI layer in yup_crypto Rust crate
     └── Olm: 1:1 double-ratchet sessions (account, outbound/inbound, pickling)
-    └── Megolm: Group ratchet (outbound/inbound sessions, encrypt/decrypt, export key)
     └── Fingerprint: SHA-256 of both identity keys in canonical sorted order
 
 Communication with Flutter: manual dart:ffi binds
 Key Storage: flutter_secure_storage (Keystore/Keychain-backed)
-Protocols: Olm session establishment, SAS verification, Megolm group encryption
-Group Key Distribution: Exported Megolm session key encrypted per-member via 1:1 Olm (msg_type=2)
-Polling: Separate group message polling via GET /api/v1/groups/{id}/messages
+Protocols: Olm session establishment, SAS verification
+Groups/Megolm: Deferred. No active M11 source code is part of M9/M10.
 ```
 
 ---
@@ -136,17 +134,13 @@ Polling: Separate group message polling via GET /api/v1/groups/{id}/messages
 ### M10 — Push Notifications
 - `internal/notifier/notifier.go`: FCM push via Firebase Admin SDK, noop fallback.
 - `POST /api/v1/devices`: Device token registration (auth-protected).
-- Push sent async after `StoreMessage` and `SendGroupMessage`.
+- Push sent async after `StoreMessage`.
 - Flutter `PushService` provides `pushTriggers` stream for immediate polling.
 
 ### M11 — Group Chats
-- Server-side: `groups`, `group_members`, `group_messages` tables (Postgres/InMemory).
-- Group API: create, get, list, add/remove members, send/get messages.
-- Client-side Megolm FFI: `CryptoService` exposes 5 Megolm methods.
-- `GroupService`: outbound session creation, Megolm encrypt/decrypt, session key distribution via 1:1 Olm.
-- Session key distribution: exported Megolm key encrypted per-member via existing Olm sessions (msg_type=2).
-- `ConversationService` forwards msg_type=2 to `GroupService.handleIncomingSessionKey`.
-- Persistent inbound sessions via secure storage (`megolm_inbound:$username`).
+- Deferred and out of M9/M10 scope.
+- No active group routes, GroupService, or Megolm app/server/Rust source code is present in the M9/M10 stabilization branch.
+- Local developer PostgreSQL volumes may still contain old experimental group tables; those are not active source code.
 
 ---
 
@@ -165,6 +159,6 @@ Polling: Separate group message polling via GET /api/v1/groups/{id}/messages
 | **M7** | **Security Correctness & Auth Hardening** | **✅ Completed** |
 | **M7-FIX** | **Reaudit Blocking Fixes (6 blockers)** | **✅ All 6 resolved** |
 | M8 | PostgreSQL Persistence | ✅ Completed |
-| M9 | Security Verification & Evidence Pack | ✅ Completed |
-| **M10** | **FCM Push Notifications** | **✅ Completed** |
-| **M11** | **E2EE Group Chats (Megolm)** | **✅ Completed** |
+| M9 | Security Verification & Evidence Pack | ✅ Internal Alpha stabilized |
+| **M10** | **FCM Push Notifications** | **✅ Internal Alpha stabilized** |
+| **M11** | **E2EE Group Chats (Megolm)** | **❌ Deferred / not active** |
