@@ -126,4 +126,15 @@ class ApiClient {
     }
     throw HttpException('get sent messages failed: ${response.statusCode} $body');
   }
+
+  Future<void> registerDeviceToken(String token, String platform) async {
+    final request = await _client.postUrl(Uri.parse('$baseUrl/api/v1/devices'));
+    _headers.forEach((k, v) => request.headers.set(k, v));
+    request.write(jsonEncode({'token': token, 'platform': platform}));
+    final response = await request.close();
+    if (response.statusCode != 200) {
+      final body = await response.transform(utf8.decoder).join();
+      throw HttpException('device registration failed: ${response.statusCode} $body');
+    }
+  }
 }

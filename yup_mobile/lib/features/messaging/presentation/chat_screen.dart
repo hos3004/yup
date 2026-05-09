@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/networking/api_client.dart';
+import '../../../core/push/push_service.dart';
 import '../../../core/secure_storage/secure_storage_service.dart';
 import '../../../core/storage/local_database.dart';
 import '../../../core/storage/message_dao.dart';
@@ -18,6 +19,7 @@ class ChatScreen extends StatefulWidget {
   final CryptoService cryptoService;
   final ApiClient apiClient;
   final SecureStorageService secureStorage;
+  final PushService? pushService;
 
   const ChatScreen({
     super.key,
@@ -26,6 +28,7 @@ class ChatScreen extends StatefulWidget {
     required this.cryptoService,
     required this.apiClient,
     required this.secureStorage,
+    this.pushService,
   });
 
   @override
@@ -76,6 +79,7 @@ class _ChatScreenState extends State<ChatScreen> {
       peerKeyStore: _peerKeyStore,
       messageDao: _messageDao,
       username: widget.username,
+      pushTriggers: widget.pushService?.pushTriggers,
     );
     _conversation.initialize(widget.myCurveKey);
 

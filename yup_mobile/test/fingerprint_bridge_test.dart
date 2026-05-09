@@ -48,7 +48,6 @@ void main() {
       // With the same our_key, A+B and B+A should produce the same fingerprint
       // because keys are sorted before hashing.
       // "our" key is "test_our_identity_key_abc123"
-      const aliceKey = 'alice_curve25519_key_value';
       const bobKey = 'bob_curve25519_key_value';
 
       // Simulate A's perspective (A is "our", B is "their")

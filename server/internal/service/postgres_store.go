@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -36,10 +36,15 @@ func generateToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
 const migrationUpSQL = `
 CREATE TABLE IF NOT EXISTS users (
     username    VARCHAR(64)  PRIMARY KEY,
-    auth_token  VARCHAR(128) NOT NULL UNIQUE,
+    token_hash  VARCHAR(64)  NOT NULL DEFAULT '',
     display_name VARCHAR(128) NOT NULL DEFAULT '',
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -55,11 +60,11 @@ CREATE TABLE IF NOT EXISTS key_bundles (
 );
 
 CREATE TABLE IF NOT EXISTS one_time_keys (
-    id          BIGSERIAL   PRIMARY KEY,
-    username    VARCHAR(64) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-    key_value   VARCHAR(256) NOT NULL,
-    consumed    BOOLEAN     NOT NULL DEFAULT FALSE,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id           BIGSERIAL    PRIMARY KEY,
+    username     VARCHAR(64)  NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    key_value    VARCHAR(256) NOT NULL,
+    consumed     BOOLEAN      NOT NULL DEFAULT FALSE,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_otk_username_consumed ON one_time_keys(username, consumed);
@@ -78,6 +83,31 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_recipient_status ON messages(recipient_username, status);
 CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_username);
+
+-- M8.1: Add columns, indexes, and constraints for existing databases
+ALTER TABLE one_time_keys ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMPTZ;
+DROP INDEX IF EXISTS idx_otk_username_consumed;
+CREATE INDEX IF NOT EXISTS idx_otk_username_consumed ON one_time_keys(username, consumed, consumed_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_otk_unique_username_key ON one_time_keys(username, key_value);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_hash VARCHAR(64) NOT NULL DEFAULT '';
+ALTER TABLE users DROP COLUMN IF EXISTS auth_token;
+ALTER TABLE messages DROP CONSTRAINT IF EXISTS fk_messages_sender;
+ALTER TABLE messages ADD CONSTRAINT fk_messages_sender FOREIGN KEY (sender_username) REFERENCES users(username) ON DELETE CASCADE;
+ALTER TABLE messages DROP CONSTRAINT IF EXISTS fk_messages_recipient;
+ALTER TABLE messages ADD CONSTRAINT fk_messages_recipient FOREIGN KEY (recipient_username) REFERENCES users(username) ON DELETE CASCADE;
+
+CREATE TABLE IF NOT EXISTS device_tokens (
+    id         BIGSERIAL    PRIMARY KEY,
+    username   VARCHAR(64)  NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    token      VARCHAR(512) NOT NULL,
+    platform   VARCHAR(16)  NOT NULL DEFAULT 'android',
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE(username, token)
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_tokens_username ON device_tokens(username);
+
 `
 
 // NewPostgresStore creates a new PostgresStore, connects to the database,
@@ -105,6 +135,12 @@ func NewPostgresStore(databaseURL string) (*PostgresStore, error) {
 		return nil, fmt.Errorf("postgres: migration: %w", err)
 	}
 
+	// Reset delivered messages to pending on startup (retry after restart)
+	if _, err := pool.Exec(ctx, `UPDATE messages SET status = 'pending', delivered_at = NULL WHERE status = 'delivered'`); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("postgres: reset delivered: %w", err)
+	}
+
 	return &PostgresStore{pool: pool}, nil
 }
 
@@ -126,10 +162,11 @@ func (s *PostgresStore) RegisterUser(username string) (*model.User, error) {
 		return nil, err
 	}
 	now := time.Now().UTC()
+	tokenHash := sha256Hex(token)
 
 	_, err = s.pool.Exec(context.Background(),
-		`INSERT INTO users (username, auth_token, created_at) VALUES ($1, $2, $3)`,
-		username, token, now,
+		`INSERT INTO users (username, token_hash, created_at) VALUES ($1, $2, $3)`,
+		username, tokenHash, now,
 	)
 	if err != nil {
 		if isPGDuplicate(err) {
@@ -151,9 +188,9 @@ func (s *PostgresStore) GetUser(username string) (*model.User, bool) {
 
 	var u model.User
 	err := s.pool.QueryRow(ctx,
-		`SELECT username, auth_token, display_name, created_at FROM users WHERE username = $1`,
+		`SELECT username, display_name, created_at FROM users WHERE username = $1`,
 		username,
-	).Scan(&u.Username, &u.AuthToken, &u.DisplayName, &u.CreatedAt)
+	).Scan(&u.Username, &u.DisplayName, &u.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, false
@@ -167,30 +204,16 @@ func (s *PostgresStore) ValidateToken(token string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	type userRow struct {
-		username  string
-		authToken string
-	}
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT username, auth_token FROM users WHERE auth_token = $1`,
-		token,
-	)
+	tokenHash := sha256Hex(token)
+	var username string
+	err := s.pool.QueryRow(ctx,
+		`SELECT username FROM users WHERE token_hash = $1`,
+		tokenHash,
+	).Scan(&username)
 	if err != nil {
 		return "", false
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var r userRow
-		if err := rows.Scan(&r.username, &r.authToken); err != nil {
-			return "", false
-		}
-		if subtle.ConstantTimeCompare([]byte(token), []byte(r.authToken)) == 1 {
-			return r.username, true
-		}
-	}
-	return "", false
+	return username, true
 }
 
 // ─── Key Bundle methods ────────────────────────────────────
@@ -270,6 +293,7 @@ func (s *PostgresStore) GetKeyBundle(username string) (*model.KeyBundle, bool, s
 	}
 
 	// Consume one OTK in a sub-transaction
+	var otkID int64
 	var chosenOTK string
 	var remaining string
 
@@ -279,14 +303,14 @@ func (s *PostgresStore) GetKeyBundle(username string) (*model.KeyBundle, bool, s
 	}
 	defer tx.Rollback(ctx)
 
-	// Find one unconsumed OTK
+	// Find one unconsumed OTK by id
 	err = tx.QueryRow(ctx,
-		`SELECT key_value FROM one_time_keys
+		`SELECT id, key_value FROM one_time_keys
 		 WHERE username = $1 AND consumed = FALSE
 		 ORDER BY id ASC LIMIT 1
 		 FOR UPDATE SKIP LOCKED`,
 		username,
-	).Scan(&chosenOTK)
+	).Scan(&otkID, &chosenOTK)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return nil, false, ""
@@ -296,8 +320,8 @@ func (s *PostgresStore) GetKeyBundle(username string) (*model.KeyBundle, bool, s
 
 	if chosenOTK != "" {
 		_, err = tx.Exec(ctx,
-			`UPDATE one_time_keys SET consumed = TRUE WHERE key_value = $1 AND username = $2`,
-			chosenOTK, username,
+			`UPDATE one_time_keys SET consumed = TRUE, consumed_at = NOW() WHERE id = $1`,
+			otkID,
 		)
 		if err != nil {
 			return nil, false, ""
@@ -416,7 +440,7 @@ func (s *PostgresStore) GetPendingEnvelopes(username string) []*model.Envelope {
 	}
 	defer rows.Close()
 
-	var envs []*model.Envelope
+	envs := make([]*model.Envelope, 0)
 	now := time.Now().UTC()
 	var ids []string
 
@@ -500,7 +524,7 @@ func (s *PostgresStore) GetSentMessages(username string) []*model.Envelope {
 	}
 	defer rows.Close()
 
-	var envs []*model.Envelope
+	envs := make([]*model.Envelope, 0)
 	for rows.Next() {
 		var env model.Envelope
 		if err := rows.Scan(&env.ID, &env.SenderUsername, &env.Ciphertext, &env.MessageType, &env.SenderCurveKey, &env.Status, &env.CreatedAt); err != nil {
@@ -552,6 +576,63 @@ func (s *PostgresStore) DeleteAllUserData(username string) error {
 	}
 
 	return nil
+}
+
+func (s *PostgresStore) PurgeExpiredMessages(maxAge time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM messages WHERE created_at < NOW() - ($1 || ' seconds')::interval`,
+		int(maxAge.Seconds()),
+	)
+	if err != nil {
+		return fmt.Errorf("purge expired messages: %w", err)
+	}
+	return nil
+}
+
+// ─── Device Token methods ────────────────────────────────────
+
+func (s *PostgresStore) RegisterDeviceToken(username, token, platform string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO device_tokens (username, token, platform, created_at, updated_at)
+		 VALUES ($1, $2, $3, NOW(), NOW())
+		 ON CONFLICT (username, token) DO UPDATE SET
+		   platform = EXCLUDED.platform,
+		   updated_at = NOW()`,
+		username, token, platform,
+	)
+	if err != nil {
+		return fmt.Errorf("register device token: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetDeviceTokens(username string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT token FROM device_tokens WHERE username = $1`, username,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get device tokens: %w", err)
+	}
+	defer rows.Close()
+
+	var tokens []string
+	for rows.Next() {
+		var token string
+		if err := rows.Scan(&token); err != nil {
+			return nil, fmt.Errorf("get device tokens: scan: %w", err)
+		}
+		tokens = append(tokens, token)
+	}
+	return tokens, nil
 }
 
 // ─── Helpers ───────────────────────────────────────────────

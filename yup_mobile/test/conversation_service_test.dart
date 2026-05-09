@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yup_mobile/core/crypto_ffi/crypto_bridge.dart';
-import 'package:yup_mobile/core/logging/log_service.dart';
 import 'package:yup_mobile/core/networking/api_client.dart';
 import 'package:yup_mobile/core/secure_storage/secure_storage_service.dart';
 import 'package:yup_mobile/core/storage/local_database.dart';
@@ -12,12 +11,8 @@ import 'package:yup_mobile/features/messaging/domain/conversation_service.dart';
 
 /// A CryptoBridge that supports fingerprint computation without native FFI.
 class TestCryptoBridge extends CryptoBridge {
-  bool _initialized = false;
-
   @override
-  void initialize() {
-    _initialized = true;
-  }
+  void initialize() {}
 
   @override
   String getFingerprint(String theirIdentityKey) {
@@ -28,7 +23,7 @@ class TestCryptoBridge extends CryptoBridge {
 
   @override
   Map<String, dynamic> createOutboundSession(String theirIdentityKey, String theirOneTimeKey) {
-    return {'session_id': 'session_${theirIdentityKey}', 'session': 'mock'};
+    return {'session_id': 'session_$theirIdentityKey', 'session': 'mock'};
   }
 
   @override

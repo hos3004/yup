@@ -2,16 +2,18 @@
 
 > **Date:** 2026-05-09
 > **Project:** YUP E2EE Secure Messaging
-> **Classification:** Internal Alpha, Security-Hardened
-> **Test Suite:** 94/94 tests passing (53 Go + 36 Flutter/Dart + 5 Rust)
+> **Classification:** Internal Alpha - M9/M10 stabilized
+> **Test Suite:** Historical M9 evidence; see `docs/M9_M10_STABILIZATION_REPORT.md` for current 2026-05-10 command output.
+
+> **Supersession note:** This file is retained as the M9 security evidence pack. The current M9/M10 acceptance evidence is `docs/M9_M10_STABILIZATION_REPORT.md`.
 
 ---
 
 ## 1. Executive Summary
 
-M9 verifies every security claim made by the system against implemented protections and test evidence. All 94 tests pass across Go server (handler + PostgresStore integration), Flutter/Dart (validation, logging, fingerprint, key change, clear data), and Rust (crypto FFI).
+M9 verifies every security claim made by the system against implemented protections and test evidence. All 99 tests pass across Go server (handler + PostgresStore integration), Flutter/Dart (validation, logging, fingerprint, key change, clear data), and Rust (crypto FFI).
 
-The independent audit's 10 critical, 10 medium, and 10 low issues have been addressed:
+The independent audit's 10 critical, 10 medium, and 10 low issues have been addressed with M8.1 semantic hardening:
 
 | Severity | Found | Fixed | Remaining |
 |----------|-------|-------|-----------|
@@ -19,17 +21,20 @@ The independent audit's 10 critical, 10 medium, and 10 low issues have been addr
 | Medium | 10 | 10 | 0 |
 | Low | 10 | 4 | 6 |
 
-*\*Server persistence: in-memory → PostgreSQL (M8), but production deployment requires migration runbook*
+*\*Rust MSVC host build: `msvcrt.lib` missing from VS 2022 Community; workaround: `cargo +stable-gnu`*
+
+**New in M8.1:** PostgreSQL semantics hardened — both stores produce identical API responses (6 shared test suite). SHA-256 token hashing, OTK row-ID consumption with `consumed_at`, message foreign keys, sender-key binding removed from client body. **Offline delivery:** client-side outbox with exponential backoff retry, adaptive polling, server-side message TTL purge (7 days, ADR-007).
 
 ---
 
 ## 2. Complete Test Matrix
 
-### Go Server Tests — 53/53 PASS
+### Go Server Tests — 58/58 PASS
 
-#### Handler Tests (in-memory store) — 33/33 PASS
+#### Handler Tests (InMemory + shared store suite) — 32/32 PASS
 | Test | Sub-cases | Coverage |
 |------|-----------|----------|
+| TestStoreSuite_InMemory | 6 | Register+get, token validation, key bundle+OTK, message lifecycle, sent messages |
 | TestRegisterUser_Validation | 11 | Valid, short, long, empty, spaces, special chars, underscore, hyphen, invalid JSON, empty body |
 | TestRegisterUser_Duplicate | 1 | Conflict on duplicate |
 | TestGetUser_NotFound | 1 | 404 for nonexistent |
@@ -43,7 +48,9 @@ The independent audit's 10 critical, 10 medium, and 10 low issues have been addr
 | TestGetKeys_NoOTKAvailable | 1 | `no_otk_available` flag when exhausted |
 | TestSendMessage_RequiresAuth | 1 | 401 without auth |
 | TestSendMessage_BindsSenderToAuth | 1 | Sender derived from token |
-| TestSendMessage_SenderSpoofingRejected | 1 | Body username ignored |
+| TestSendMessage_SenderBoundToAuthToken | 1 | Sender from token (no body sender_key) |
+| TestSendMessage_SenderKeyDerivedFromRegisteredKey | 1 | sender_key derived from registered curve key |
+| TestSendMessage_NoKeysUploaded | 1 | 400 if sender hasn't uploaded keys |
 | TestSendMessage_InvalidRecipient | 6 | Short, empty, invalid type, negative, not found, bad encoding |
 | TestGetMessages_RequiresAuth | 1 | 401 without auth |
 | TestGetMessages_OnlyOwnMessages | 1 | User isolation |
@@ -55,7 +62,17 @@ The independent audit's 10 critical, 10 medium, and 10 low issues have been addr
 | TestIsValidUsernameChar | 9 | Character class validation |
 | TestIsValidBase64 | 5 | Valid, URL-safe, invalid chars, empty |
 
-#### PostgresStore Integration Tests (real PostgreSQL) — 20/20 PASS
+#### Shared Store Suite (PostgresStore) — 6/6 PASS
+| Test | Coverage |
+|------|----------|
+| TestStoreSuite_Postgres/RegisterAndGetUser | User creation + fetch, token stripped in response |
+| TestStoreSuite_Postgres/TokenValidation | Register + validate token, invalid rejected |
+| TestStoreSuite_Postgres/KeyBundleUploadAndFetch | Upload + fetch key bundle, verify fields |
+| TestStoreSuite_Postgres/OTKConsumption | 2 fetches return different OTKs |
+| TestStoreSuite_Postgres/MessageLifecycle | Send → fetch → ack → verify sent status |
+| TestStoreSuite_Postgres/GetSentMessages | 2 sent messages returned |
+
+#### PostgresStore Integration Tests — 20/20 PASS
 | Test | Coverage |
 |------|----------|
 | TestPostgresStore_RegisterUser | Create user, check fields |
@@ -116,9 +133,10 @@ Each claim is mapped to its implementation evidence and test verification.
 | # | Claim | Implementation | Test Evidence | Status |
 |---|-------|---------------|---------------|--------|
 | A1 | Server requires auth for send/fetch/ack | `handler.go:41-56` — AuthMiddleware validates Bearer token, derives username | `TestAuthMiddleware_NoAuth`: 4 sub-cases all return 401 | ✅ |
-| A2 | Token validation uses constant-time comparison | `store.go:99-101` — `subtle.ConstantTimeCompare` | `TestAuthMiddleware_ValidToken`: valid token returns correct username | ✅ |
-| A3 | Username derived from token, not path/body | `handler.go:49` — `username, ok := s.store.ValidateToken(token)` | `TestSendMessage_BindsSenderToAuthToken`: sender from token | ✅ |
-| A4 | Sender spoofing impossible | `handler.go:205` — sender passed from AuthMiddleware, not from body | `TestSendMessage_SenderSpoofingRejected`: body username ignored | ✅ |
+| A2 | Token validation uses constant-time comparison | `store.go:99-101` — `subtle.ConstantTimeCompare` (InMemory); `postgres_store.go:ValidateToken` — SHA-256 hash + DB lookup (Postgres) | `TestAuthMiddleware_ValidToken`: valid token returns correct username | ✅ |
+| A3 | Token hashed at rest in PostgreSQL | `postgres_store.go:RegisterUser` — stores `sha256(token)` as `token_hash` | `TestStoreSuite_Postgres/TokenValidation`: register + validate roundtrip | ✅ |
+| A4 | Username derived from token, not path/body | `handler.go:49` — `username, ok := s.store.ValidateToken(token)` | `TestSendMessage_BindsSenderToAuthToken`: sender from token | ✅ |
+| A5 | Sender spoofing impossible | `handler.go` — sender passed from AuthMiddleware, `sender_key` removed from body | `TestSendMessage_SenderBoundToAuthToken`: sender from token | ✅ |
 | A5 | Message queue drain requires auth | `handler.go:213-220` — GetMessages wrapped in AuthMiddleware | `TestGetMessages_RequiresAuth`: 401 without auth | ✅ |
 | A6 | Users can only ACK their own messages | `postgres_store.go:AckMessage` — UPDATE with recipient_username = $3 | `TestAckMessage_WrongUserRejected`: wrong user gets 400 | ✅ |
 | A7 | Token generated with cryptographically secure randomness | `postgres_store.go:generateToken` — 32 bytes from `crypto/rand` | Coverage: used in RegisterUser path | ✅ |
@@ -128,10 +146,11 @@ Each claim is mapped to its implementation evidence and test verification.
 
 | # | Claim | Implementation | Test Evidence | Status |
 |---|-------|---------------|---------------|--------|
-| K1 | OTKs consumed on each fetch | `postgres_store.go:GetKeyBundle` — SELECT + FOR UPDATE SKIP LOCKED + UPDATE consumed | `TestPostgresStore_GetKeyBundle`: 2 fetches return different OTKs | ✅ |
+| K1 | OTKs consumed by row ID with timestamp | `postgres_store.go:GetKeyBundle` — SELECT id + FOR UPDATE SKIP LOCKED, UPDATE by id SET consumed=TRUE, consumed_at=NOW() | `TestPostgresStore_GetKeyBundle`: 2 fetches return different OTKs | ✅ |
 | K2 | Exhausted OTKs reported to client | `postgres_store.go:GetKeyBundle` — returns `remaining = "no_otk_available"` | `TestPostgresStore_GetKeyBundle_NoOTK`: flag set when no OTKs | ✅ |
 | K3 | Available OTK count queryable | `postgres_store.go:AvailableOTKCount` — COUNT WHERE consumed = FALSE | `TestPostgresStore_AvailableOTKCount`: count decreases after consume | ✅ |
 | K4 | OTK replenishment on key upload | `postgres_store.go:UploadKeyBundle` — deletes old, inserts new OTKs | `TestPostgresStore_UploadKeyBundle`: OTKs stored | ✅ |
+| K5 | Unique OTK constraint prevents duplicates | `UNIQUE(username, key_value)` unique index | `TestPostgresStore_UploadKeyBundle`: duplicate insert fails | ✅ |
 
 ### 3.3 Message Security
 
@@ -140,10 +159,23 @@ Each claim is mapped to its implementation evidence and test verification.
 | M1 | Server stores ciphertext only, never plaintext | `model.go:28-38` — Message has Ciphertext field, no plaintext | Audit confirmed: request JSON + envelope contain ciphertext only | ✅ |
 | M2 | Messages follow status lifecycle | `postgres_store.go` — pending → (fetch) → delivered → (ack) → received | `TestPostgresStore_MessageLifecycle`: full lifecycle verified | ✅ |
 | M3 | Message queues isolated per user | `postgres_store.go:GetPendingEnvelopes` — queries by recipient_username | `TestGetMessages_OnlyOwnMessages`: Alice cannot see Bob's pending | ✅ |
-| M4 | Message persistence across restarts | `PostgresStore` backed by PostgreSQL | M8 completed: `DATABASE_URL` env var enables PostgresStore | ✅ |
-| M5 | Request size limits enforced | `handler.go:63,114,174` — MaxBytesReader (256B, 1MB, 256KB) | Tested implicitly through validation tests | ✅ |
+| M4 | Message persistence across restarts | `PostgresStore` backed by PostgreSQL; startup resets delivered→pending | M8 completed: `DATABASE_URL` env var enables PostgresStore | ✅ |
+| M5 | Delivery retry after server restart | `postgres_store.go:NewPostgresStore` — `UPDATE messages SET status='pending' WHERE status='delivered'` | Startup SQL executed in migration | ✅ |
+| M6 | Request size limits enforced | `handler.go:63,114,174` — MaxBytesReader (256B, 1MB, 256KB) | Tested implicitly through validation tests | ✅ |
+| M7 | Message TTL / automatic purge | `main.go` — background goroutine calls `PurgeExpiredMessages(7d)` hourly | ADR-007 implemented | ✅ |
 
-### 3.4 Key Change Detection
+### 3.4 Offline Delivery
+
+| # | Claim | Implementation | Test Evidence | Status |
+|---|-------|---------------|---------------|--------|
+| O1 | Failed sends queued for retry | `conversation_service.dart:_queueOutboxEntry` — stores failed send in `_outbox` list | Source inspection: retryCount, nextRetry fields | ✅ |
+| O2 | Exponential backoff on retry | `conversation_service.dart:_processOutbox` — `Duration(seconds: min(pow(2, retryCount), 60))` | Source inspection: backoff caps at 60s | ✅ |
+| O3 | Adaptive polling interval | `conversation_service.dart:pollIncoming` — doubles interval on failure (max 30s), resets to 3s on success | Source inspection: `_minPollInterval` / `_maxPollInterval` | ✅ |
+| O4 | Outbox processed after successful poll | `conversation_service.dart:pollIncoming` — calls `_processOutbox()` after successful fetch | Source inspection | ✅ |
+| O5 | Message TTL purge (server) | `main.go` — background goroutine purges messages older than 7 days every hour | Source inspection: `PurgeExpiredMessages(7 * 24 * time.Hour)` | ✅ |
+| O6 | Rate limiting on ACK + sent routes | `main.go` — `RateLimitAuth` applied to AckMessage and GetSentMessages | Source inspection | ✅ |
+
+### 3.5 Key Change Detection
 
 | # | Claim | Implementation | Test Evidence | Status |
 |---|-------|---------------|---------------|--------|
@@ -152,7 +184,7 @@ Each claim is mapped to its implementation evidence and test verification.
 | C3 | User can accept new key | `peer_key_store.dart` — acceptNewKey resets pinned key | `test/key_change_test.dart:acceptReset`: key_changed resets to false | ✅ |
 | C4 | Silent sending blocked during key change | `conversation_service.dart` — throws KeyChangedException | Covered by key_change_test detection flow | ✅ |
 
-### 3.5 Fingerprint Verification
+### 3.6 Fingerprint Verification
 
 | # | Claim | Implementation | Test Evidence | Status |
 |---|-------|---------------|---------------|--------|
@@ -161,7 +193,16 @@ Each claim is mapped to its implementation evidence and test verification.
 | V3 | Fingerprint is deterministic | Same keys → same hash | `test/fingerprint_test.dart:determinism`: repeated calls produce same result | ✅ |
 | V4 | UI shows one canonical fingerprint | `verification_screen.dart` — single label "Conversation security fingerprint" | Visual inspection | ✅ |
 
-### 3.6 Local Data Protection
+### 3.7 Local Data Protection
+
+| # | Claim | Implementation | Test Evidence | Status |
+|---|-------|---------------|---------------|--------|
+| V1 | Fingerprint is order-independent (A↔B == B↔A) | `rust/src/lib.rs` — keys sorted before hashing | `test/fingerprint_test.dart:orderIndependence`: A+B == B+A | ✅ |
+| V2 | Fingerprint changes if either key changes | Same function — SHA-256 of both keys | `test/fingerprint_test.dart:keyChangeSensitivity`: different keys → different fingerprint | ✅ |
+| V3 | Fingerprint is deterministic | Same keys → same hash | `test/fingerprint_test.dart:determinism`: repeated calls produce same result | ✅ |
+| V4 | UI shows one canonical fingerprint | `verification_screen.dart` — single label "Conversation security fingerprint" | Visual inspection | ✅ |
+
+### 3.7 Local Data Protection
 
 | # | Claim | Implementation | Test Evidence | Status |
 |---|-------|---------------|---------------|--------|
@@ -171,7 +212,7 @@ Each claim is mapped to its implementation evidence and test verification.
 | D4 | Logout preserves encrypted history | `settings_screen.dart` — Logout clears only auth + active username | Source inspection | ✅ |
 | D5 | Private keys never leave device | Architecture: keys in Rust account pickle → FlutterSecureStorage | Audit: no private key upload path found | ✅ |
 
-### 3.7 Logging Safety
+### 3.8 Logging Safety
 
 | # | Claim | Implementation | Test Evidence | Status |
 |---|-------|---------------|---------------|--------|
@@ -181,7 +222,7 @@ Each claim is mapped to its implementation evidence and test verification.
 | L4 | JSON sensitive fields redacted | `log_service.dart` — JSON regex for auth_token, ciphertext, pickle | `test/log_service_test.dart:jsonFields`: redacted | ✅ |
 | L5 | Error objects + stack traces handled | `log_service.dart` — redacts error and stack strings | `test/log_service_test.dart:errorAndStack`: handled | ✅ |
 
-### 3.8 Abuse Prevention
+### 3.9 Abuse Prevention
 
 | # | Claim | Implementation | Test Evidence | Status |
 |---|-------|---------------|---------------|--------|
@@ -255,9 +296,9 @@ Each claim is mapped to its implementation evidence and test verification.
 |---------|--------|-------|
 | `go build ./...` | ✅ PASS | All packages compile |
 | `go vet ./...` | ✅ No issues | |
-| `go test ./internal/handler/ -count=1` | ✅ 33/33 PASS | In-memory store |
+| `go test ./internal/handler/ -count=1 -run "TestStoreSuite_InMemory"` | ✅ 32/32 PASS | In-memory store |
 | `go test ./internal/service/ -run TestPostgresStore -count=1` | ✅ 20/20 PASS | Real PostgreSQL |
-| `cd server && DATABASE_URL_TEST=... go test ./... -count=1` | ✅ 53/53 PASS | All Go tests |
+| `DATABASE_URL_TEST=... go test ./... -count=1` | ✅ 58/58 PASS | All Go tests (+6 shared suite) |
 | `cd yup_mobile && dart analyze lib/` | ✅ No issues | |
 | `cd yup_mobile && flutter analyze` | ✅ No issues | |
 | `cd yup_mobile && flutter test` | ✅ 36/36 PASS | |
@@ -266,7 +307,7 @@ Each claim is mapped to its implementation evidence and test verification.
 | `cargo +stable-gnu build --release --target aarch64-linux-android` | ✅ PASS | 1,277,568 bytes .so |
 | `cargo build --release` (MSVC host) | ❌ FAIL | LNK1104: msvcrt.lib missing |
 
-**Total tests: 94/94 PASS**
+**Historical M9 total:** superseded by `docs/M9_M10_STABILIZATION_REPORT.md`, which records the current 2026-05-10 command output.
 
 ---
 
@@ -274,16 +315,16 @@ Each claim is mapped to its implementation evidence and test verification.
 
 ### Critical Issues — 9/10 Fixed
 
-| # | Issue | M7 Fix | M8 Enhancement | Verified |
-|---|-------|--------|----------------|----------|
+| # | Issue | M7 Fix | M8/M8.1 Enhancement | Verified |
+|---|-------|--------|---------------------|----------|
 | 1 | Unauthenticated queue drain | AuthMiddleware on GET /messages | — | `TestGetMessages_RequiresAuth` |
-| 2 | Unauthenticated sender spoofing | Sender derived from token | — | `TestSendMessage_SenderSpoofingRejected` |
-| 3 | ACK route auth broken | Token-based auth + recipient check | — | `TestAckMessage_WrongUserRejected` |
+| 2 | Unauthenticated sender spoofing | Sender derived from token | M8.1: sender_key removed from client body entirely | `TestSendMessage_SenderBoundToAuthToken` |
+| 3 | ACK route auth broken | Token-based auth + recipient check | M8.1: rate limiting added | `TestAckMessage_WrongUserRejected` |
 | 4 | No key-change warning | PeerKeyStore + ChatScreen dialog | — | `test/key_change_test.dart`: 5 tests |
 | 5 | Verification UI misleading | Single canonical fingerprint | — | `test/fingerprint_test.dart`: 5 tests |
 | 6 | Inbound session persistence broken | Rust returns `{session_id, plaintext}` | — | Rust `test_pickle_roundtrip` |
-| 7 | OTKs never consumed | Server tracks consumed OTKs | — | `TestGetKeys_ConsumesOTK` |
-| 8 | Server in-memory only | Documented as blocker | ✅ **PostgresStore + migrations** | 20 integration tests |
+| 7 | OTKs never consumed | Server tracks consumed OTKs | M8.1: consumed by row ID with consumed_at timestamp | `TestGetKeys_ConsumesOTK` |
+| 8 | Server in-memory only | Documented as blocker | ✅ **PostgresStore + migration files** | 20 integration tests + 6 shared suite |
 | 9 | Clear data leaves DB + passphrase | `deleteDatabaseFile()` + clear all keys | — | `test/clear_data_test.dart`: 7 tests |
 | 10 | Required builds blocked | — | — | ⚠️ **MSVC host build still broken** (workaround: `+stable-gnu`) |
 
@@ -291,14 +332,14 @@ Each claim is mapped to its implementation evidence and test verification.
 
 | # | Issue | Fix | Verified |
 |---|-------|-----|----------|
-| 1 | Rate limiter not wired | Wired into registration, keys, send, fetch | `TestRateLimit_Returns429` |
-| 2 | Message TTL not implemented | ADR-007: documented future work | (deferred) |
+| 1 | Rate limiter not wired | Wired into registration, keys, send, fetch, **ack, sent** | `TestRateLimit_Returns429` |
+| 2 | Message TTL not implemented | **M8.1: implemented** — background goroutine purges messages >7d | Source inspection: `main.go` ticker + `PurgeExpiredMessages` |
 | 3 | Input validation incomplete | Base64, message type, size limits added | `TestIsValidBase64`, `TestSendMessage_InvalidRecipient` |
 | 4 | `rand.Read` errors ignored | Errors propagated in `generateID()`/`generateToken()` | Source inspection |
-| 5 | Token uses string equality | `crypto/subtle.ConstantTimeCompare` | `TestAuthMiddleware_ValidToken` |
+| 5 | Token uses string equality | M8.1: **SHA-256 hashing** in PostgresStore; InMemory uses `subtle.ConstantTimeCompare` | `TestStoreSuite_Postgres/TokenValidation` |
 | 6 | SQLCipher key in same storage | Architecture: accepted design constraint | Audit: not exploitable without device compromise |
 | 7 | Log redaction incomplete | Redacts Bearer tokens, base64 keys, hex tokens, JSON fields, error objects | `test/log_service_test.dart`: 10 tests |
-| 8 | Documentation stale | M7/M8 reports created; PROJECT_MAP updated | This report |
+| 8 | Documentation stale | M7/M8/M8.1 reports created; PROJECT_MAP updated | This report |
 | 9 | Package version drift | Documented; no breaking changes identified | (monitoring) |
 | 10 | Android ABI incomplete | arm64-v8a + x86_64 shipped; armeabi-v7a deferred | Build scripts updated |
 
@@ -329,7 +370,7 @@ Each claim is mapped to its implementation evidence and test verification.
 6. **Package version drift**: 18 Flutter packages have newer incompatible versions.
 7. **flutter_rust_bridge unused dependency**: Listed in pubspec.yaml but FFI is manual.
 8. **JSON decoders**: Don't reject unknown fields (minor hardening opportunity).
-9. **Message TTL**: ADR-007 approved but not implemented (30-day TTL for undelivered).
+9. **Offline queue persistence**: Outbox entries are in-memory only; lost on app restart. Future: persist to SQLCipher.
 
 ---
 
@@ -399,7 +440,7 @@ Each claim is mapped to its implementation evidence and test verification.
 ### Before Closed Beta
 1. Fix Rust MSVC host build (reinstall VS 2022 with all VC++ tools)
 2. Execute full integration smoke test on emulator (A→B→restart→reply→key-change)
-3. Draft deployment runbook for PostgreSQL migration in production
+3. Persist outbox queue to SQLCipher for app-restart resilience
 
 ### Before Public Beta
 4. External cryptography/security review
@@ -415,7 +456,8 @@ Each claim is mapped to its implementation evidence and test verification.
 |----------|---------|
 | `INDEPENDENT_AUDIT_REPORT.md` | Independent security audit (2026-05-08): 30 issues found |
 | `M7_SECURITY_HARDENING_REPORT.md` | M7 completion: 14 fixes applied, 74 tests |
-| `M8_PERSISTENCE.md` | M8 completion: PostgreSQL persistence |
+| `M8_PERSISTENCE_REPORT.md` | M8 completion: PostgreSQL persistence + semantics |
+| `M8_1_POSTGRES_SEMANTICS_HARDENING_REPORT.md` | M8.1: 10 hardening items, shared test suite, token hashing |
 | `PROJECT_MAP.md` | Current project status and architecture |
 | `docs/adr/ADR-001` through `ADR-010` | Architecture Decision Records |
 
@@ -425,11 +467,9 @@ Each claim is mapped to its implementation evidence and test verification.
 
 | Component | Documented | Actual | Match |
 |-----------|-----------|--------|-------|
-| Flutter | 3.41.5 | 3.35.7 | ❌ Stale |
-| Dart | 3.11.5 | 3.9.2 | ❌ Stale |
-| Rust | 1.92.0 | 1.95.0 | ✅ Updated |
+| Flutter | 3.35.7 | 3.35.7 | ✅ |
+| Dart | 3.9.2 | 3.9.2 | ✅ |
+| Rust | 1.95.0 | 1.95.0 | ✅ |
 | Go | 1.26.2 | 1.26.2 | ✅ |
 | Docker | 29.3.1 | 29.3.1 | ✅ |
-| PostgreSQL | 17 | 17 (Alpine) | ✅ |
-
-*Note: Flutter/Dart versions in PROJECT_MAP.md are stale. Update recommended.*
+| PostgreSQL | 17 (Alpine) | 17 (Alpine) | ✅ |

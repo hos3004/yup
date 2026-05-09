@@ -47,6 +47,21 @@ type Envelope struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+type DeviceToken struct {
+	ID        int64     `json:"id"`
+	Username  string    `json:"username"`
+	Token     string    `json:"token"`
+	Platform  string    `json:"platform"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// DeviceTokenRequest is the request format for POST /api/v1/devices
+type DeviceTokenRequest struct {
+	Token    string `json:"token"`
+	Platform string `json:"platform"`
+}
+
 // KeyBundleResponse is the response format for GET /keys/{username}
 type KeyBundleResponse struct {
 	DeviceID      string   `json:"device_id"`

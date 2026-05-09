@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "523312159926",
+    "project_id": "y-up-1a6ad",
+    "storage_bucket": "y-up-1a6ad.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:523312159926:android:82cadac47323fccd145a17",
+        "android_client_info": {
+          "package_name": "yup.hossam.com"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDlnpE5eZkn9hmpOEUXFy4PUiz8Cn13YhI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import '../../../core/networking/api_client.dart';
 import '../../../core/storage/message_dao.dart';
 import '../../key_management/domain/crypto_service.dart';
@@ -34,6 +35,25 @@ class MessageItem {
   }
 }
 
+class _OutboxEntry {
+  final String recipientUsername;
+  final String text;
+  final String sessionId;
+  final String ciphertext;
+  final int messageType;
+  int retryCount = 0;
+  DateTime nextRetry;
+
+  _OutboxEntry({
+    required this.recipientUsername,
+    required this.text,
+    required this.sessionId,
+    required this.ciphertext,
+    required this.messageType,
+    DateTime? nextRetry,
+  }) : nextRetry = nextRetry ?? DateTime.now();
+}
+
 class ConversationService {
   final ApiClient _api;
   final CryptoService _crypto;
@@ -42,11 +62,20 @@ class ConversationService {
   final MessageDao _messageDao;
   final String _username;
   final List<MessageItem> _messages = [];
+  final List<_OutboxEntry> _outbox = [];
   Timer? _pollTimer;
   String? _sessionId;
   String? _myCurveKey;
   String? _recipientCurveKey;
   String? _recipientOtk;
+
+  // Adaptive polling
+  Duration _pollInterval = const Duration(seconds: 3);
+  static const Duration _minPollInterval = Duration(seconds: 3);
+  static const Duration _maxPollInterval = Duration(seconds: 30);
+
+  // Outbox retry backoff
+  static const int _maxRetryDelaySeconds = 60;
 
   final _messageController = StreamController<List<MessageItem>>.broadcast();
   final _errorController = StreamController<String>.broadcast();
@@ -58,6 +87,8 @@ class ConversationService {
 
   List<MessageItem> get currentMessages => List.unmodifiable(_messages);
 
+  StreamSubscription? _pushSubscription;
+
   ConversationService({
     required ApiClient apiClient,
     required CryptoService cryptoService,
@@ -65,12 +96,20 @@ class ConversationService {
     required PeerKeyStore peerKeyStore,
     required MessageDao messageDao,
     required String username,
+    Stream<void>? pushTriggers,
   })  : _api = apiClient,
         _crypto = cryptoService,
         _sessionStore = sessionStore,
         _peerKeyStore = peerKeyStore,
         _messageDao = messageDao,
-        _username = username;
+        _username = username {
+    if (pushTriggers != null) {
+      _pushSubscription = pushTriggers.listen((_) {
+        _pollInterval = _minPollInterval;
+        _runPollCycle();
+      });
+    }
+  }
 
   String? get recipientCurveKey => _recipientCurveKey;
 
@@ -95,7 +134,6 @@ class ConversationService {
       );
       if (changed) {
         _keyChangedController.add(recipientUsername);
-        // Do not proceed with session creation — caller must handle warning
         throw KeyChangedException(recipientUsername);
       }
 
@@ -165,10 +203,96 @@ class ConversationService {
 
       _messages.add(msg);
       _messageController.add(List.from(_messages));
-
       await _messageDao.insertMessage(msg, _username, _recipientCurveKey!);
     } catch (e) {
-      _errorController.add('Send error: $e');
+      // Queue for offline retry
+      _queueOutboxEntry(recipientUsername, text, _sessionId!, e);
+    }
+  }
+
+  void _queueOutboxEntry(String recipientUsername, String text, String sessionId, Object error) {
+    // Remove any existing outbox entry for the same (recipient, text) to avoid duplicates
+    _outbox.removeWhere((e) => e.recipientUsername == recipientUsername && e.text == text);
+
+    // Encrypt now while session is available (may not be later if app restarts)
+    String ct;
+    int msgType;
+    try {
+      final encrypted = _crypto.encryptMessage(sessionId, text);
+      ct = encrypted['ciphertext'] as String;
+      msgType = encrypted['message_type'] as int;
+    } catch (_) {
+      _errorController.add('Send error: $error');
+      return;
+    }
+
+    _outbox.add(_OutboxEntry(
+      recipientUsername: recipientUsername,
+      text: text,
+      sessionId: sessionId,
+      ciphertext: ct,
+      messageType: msgType,
+    ));
+
+    // Add a local placeholder so user sees the message
+    final placeholderId = 'outbox_${DateTime.now().millisecondsSinceEpoch}';
+    final msg = MessageItem(
+      id: placeholderId,
+      sender: _username,
+      text: text,
+      isOutgoing: true,
+      status: 'failed',
+      createdAt: DateTime.now(),
+    );
+    _messages.add(msg);
+    _messageController.add(List.from(_messages));
+
+    _errorController.add('Message queued for retry: $error');
+  }
+
+  Future<void> _processOutbox() async {
+    if (_outbox.isEmpty) return;
+
+    final now = DateTime.now();
+    final retryable = _outbox.where((e) => e.nextRetry.isBefore(now)).toList();
+    if (retryable.isEmpty) return;
+
+    for (final entry in retryable) {
+      try {
+        final env = await _api.sendMessage(
+          recipient: entry.recipientUsername,
+          ciphertext: entry.ciphertext,
+          messageType: entry.messageType,
+          senderKey: _myCurveKey!,
+        );
+
+        // Remove from outbox
+        _outbox.remove(entry);
+
+        // Update local message placeholder with server-assigned id
+        for (int i = 0; i < _messages.length; i++) {
+          if (_messages[i].text == entry.text &&
+              _messages[i].isOutgoing &&
+              _messages[i].status == 'failed') {
+            _messages[i] = MessageItem(
+              id: env['id'] as String,
+              sender: _username,
+              text: entry.text,
+              isOutgoing: true,
+              status: 'pending',
+              createdAt: DateTime.now(),
+            );
+            await _messageDao.insertMessage(_messages[i], _username, _recipientCurveKey!);
+            break;
+          }
+        }
+        _messageController.add(List.from(_messages));
+      } catch (_) {
+        entry.retryCount++;
+        entry.nextRetry = DateTime.now().add(
+          Duration(seconds: min(pow(2, entry.retryCount).toInt(), _maxRetryDelaySeconds)),
+        );
+      }
     }
   }
 
@@ -192,12 +316,10 @@ class ConversationService {
           plaintext = _crypto.decryptMessage(existingSessionId, ct, msgType);
           _sessionId ??= existingSessionId;
         } else {
-          // Returns {session_id, plaintext}
           final inboundResult = _crypto.createInboundSession(senderKey, ct);
           final inboundSessionId = inboundResult['session_id'] as String;
           plaintext = inboundResult['plaintext'] as String;
           _sessionId = inboundSessionId;
-          // Store the actual inbound session keyed by sender's curve key
           await _sessionStore.addSession(inboundSessionId, senderKey);
         }
 
@@ -221,7 +343,16 @@ class ConversationService {
           await _api.ackMessage(msgId);
         } catch (_) {}
       }
-    } catch (_) {}
+
+      // Reset poll interval on success, process outbox
+      _pollInterval = _minPollInterval;
+      await _processOutbox();
+    } catch (_) {
+      // Backoff on failure
+      _pollInterval = Duration(
+        seconds: min((_pollInterval.inSeconds * 2), _maxPollInterval.inSeconds),
+      );
+    }
   }
 
   Future<void> pollSentStatus() async {
@@ -254,11 +385,16 @@ class ConversationService {
 
   void startPolling() {
     _pollTimer?.cancel();
-    pollIncoming();
-    pollSentStatus();
-    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      pollIncoming();
-      pollSentStatus();
+    _pollInterval = _minPollInterval;
+    _runPollCycle();
+  }
+
+  void _runPollCycle() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer(_pollInterval, () async {
+      await pollIncoming();
+      await pollSentStatus();
+      _runPollCycle();
     });
   }
 
@@ -269,6 +405,7 @@ class ConversationService {
 
   void dispose() {
     stopPolling();
+    _pushSubscription?.cancel();
     _messageController.close();
     _errorController.close();
     _keyChangedController.close();

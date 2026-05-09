@@ -1,7 +1,7 @@
 # PROJECT_MAP — E2EE Secure Messaging (YUP)
 
-> **Status:** Internal Alpha, Security-Hardened
-> **Last updated:** 2026-05-09 (M7-FIX verified)
+> **Status:** Internal Alpha - M9/M10 stabilized
+> **Last updated:** 2026-05-10 (M9/M10 final verification)
 > **Architecture style:** Olm E2EE via Vodozemac (verified), Matrix-style session management
 
 ---
@@ -46,8 +46,8 @@ mobile/lib/
 │   │   └── presentation/         # (empty — no UI, background service)
 │   ├── messaging/
 │   │   ├── data/                 # SessionStore, PeerKeyStore
-│   │   ├── domain/               # ConversationService (encrypt/send/poll/decrypt)
-│   │   └── presentation/         # ChatScreen (with key changed warning)
+│   │   ├── domain/               # ConversationService (1:1)
+│   │   └── presentation/         # ChatScreen
 │   ├── verification/
 │   │   ├── data/                 # VerificationService
 │   │   ├── domain/               # (empty)
@@ -91,11 +91,13 @@ Private Keys ─── NEVER leave the device
 
 Library: Vodozemac 0.10 (Olm verified)
     └── C FFI layer in yup_crypto Rust crate
+    └── Olm: 1:1 double-ratchet sessions (account, outbound/inbound, pickling)
     └── Fingerprint: SHA-256 of both identity keys in canonical sorted order
 
 Communication with Flutter: manual dart:ffi binds
 Key Storage: flutter_secure_storage (Keystore/Keychain-backed)
-Protocols: Olm session establishment, SAS verification (fingerprint comparison)
+Protocols: Olm session establishment, SAS verification
+Groups/Megolm: Deferred. No active M11 source code is part of M9/M10.
 ```
 
 ---
@@ -129,6 +131,17 @@ Protocols: Olm session establishment, SAS verification (fingerprint comparison)
 ### QR Scanning (Pending)
 - Verification is currently out-of-band text comparison only.
 
+### M10 — Push Notifications
+- `internal/notifier/notifier.go`: FCM push via Firebase Admin SDK, noop fallback.
+- `POST /api/v1/devices`: Device token registration (auth-protected).
+- Push sent async after `StoreMessage`.
+- Flutter `PushService` provides `pushTriggers` stream for immediate polling.
+
+### M11 — Group Chats
+- Deferred and out of M9/M10 scope.
+- No active group routes, GroupService, or Megolm app/server/Rust source code is present in the M9/M10 stabilization branch.
+- Local developer PostgreSQL volumes may still contain old experimental group tables; those are not active source code.
+
 ---
 
 ## [MILESTONE STATUS]
@@ -146,4 +159,6 @@ Protocols: Olm session establishment, SAS verification (fingerprint comparison)
 | **M7** | **Security Correctness & Auth Hardening** | **✅ Completed** |
 | **M7-FIX** | **Reaudit Blocking Fixes (6 blockers)** | **✅ All 6 resolved** |
 | M8 | PostgreSQL Persistence | ✅ Completed |
-| M9 | Security Verification & Evidence Pack | ✅ Completed |
+| M9 | Security Verification & Evidence Pack | ✅ Internal Alpha stabilized |
+| **M10** | **FCM Push Notifications** | **✅ Internal Alpha stabilized** |
+| **M11** | **E2EE Group Chats (Megolm)** | **❌ Deferred / not active** |

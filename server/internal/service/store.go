@@ -1,7 +1,6 @@
 package service
 
 import (
-	"crypto/subtle"
 	"fmt"
 	"sync"
 	"time"
@@ -23,30 +22,35 @@ type DataStore interface {
 	AckMessage(messageID, username string) error
 	GetSentMessages(username string) []*model.Envelope
 	DeleteAllUserData(username string) error
+	PurgeExpiredMessages(maxAge time.Duration) error
+	RegisterDeviceToken(username, token, platform string) error
+	GetDeviceTokens(username string) ([]string, error)
 }
 
 type InMemoryStore struct {
 	mu               sync.RWMutex
 	users            map[string]*model.User
-	tokens           map[string]string            // token -> username
+	tokenHashes      map[string]string            // sha256(token) -> username
 	devices          map[string]*model.Device      // deviceID -> device
 	keyBundles       map[string]*model.KeyBundle   // username -> latest bundle
 	consumedOtk      map[string]map[string]bool    // username -> consumed OTK set
 	messages         map[string]*model.Message     // messageID -> message
 	pendingEnvelopes map[string][]string           // username -> pending messageIDs
 	sentMessages     map[string][]string           // username -> sent messageIDs
+	deviceTokens     map[string]map[string]*model.DeviceToken  // username -> token -> DeviceToken
 }
 
 func NewInMemoryStore() *InMemoryStore {
 	return &InMemoryStore{
 		users:            make(map[string]*model.User),
-		tokens:           make(map[string]string),
+		tokenHashes:      make(map[string]string),
 		devices:          make(map[string]*model.Device),
 		keyBundles:       make(map[string]*model.KeyBundle),
 		consumedOtk:      make(map[string]map[string]bool),
 		messages:         make(map[string]*model.Message),
 		pendingEnvelopes: make(map[string][]string),
 		sentMessages:     make(map[string][]string),
+		deviceTokens:     make(map[string]map[string]*model.DeviceToken),
 	}
 }
 
@@ -63,13 +67,14 @@ func (s *InMemoryStore) RegisterUser(username string) (*model.User, error) {
 		return nil, err
 	}
 
+	tokenHash := sha256Hex(token)
 	user := &model.User{
 		Username:  username,
 		AuthToken: token,
 		CreatedAt: time.Now().UTC(),
 	}
 	s.users[username] = user
-	s.tokens[token] = username
+	s.tokenHashes[tokenHash] = username
 	return user, nil
 }
 
@@ -80,24 +85,16 @@ func (s *InMemoryStore) GetUser(username string) (*model.User, bool) {
 	return user, ok
 }
 
-// ValidateToken looks up the user by token and returns the username.
-// Uses constant-time comparison for token verification.
+// ValidateToken looks up the user by token hash and returns the username.
 func (s *InMemoryStore) ValidateToken(token string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	username, ok := s.tokens[token]
+	tokenHash := sha256Hex(token)
+	username, ok := s.tokenHashes[tokenHash]
 	if !ok {
 		return "", false
 	}
-	user, ok := s.users[username]
-	if !ok {
-		return "", false
-	}
-	// Constant-time comparison
-	if subtle.ConstantTimeCompare([]byte(token), []byte(user.AuthToken)) == 1 {
-		return username, true
-	}
-	return "", false
+	return username, true
 }
 
 func (s *InMemoryStore) UploadKeyBundle(username string, bundle *model.KeyBundle) (*model.KeyBundle, error) {
@@ -312,6 +309,19 @@ func (s *InMemoryStore) GetSentMessages(username string) []*model.Envelope {
 	return envs
 }
 
+func (s *InMemoryStore) PurgeExpiredMessages(maxAge time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cutoff := time.Now().UTC().Add(-maxAge)
+	for id, msg := range s.messages {
+		if msg.CreatedAt.Before(cutoff) {
+			delete(s.messages, id)
+		}
+	}
+	return nil
+}
+
 func (s *InMemoryStore) DeleteAllUserData(username string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -320,13 +330,54 @@ func (s *InMemoryStore) DeleteAllUserData(username string) error {
 		return fmt.Errorf("user not found")
 	}
 
-	token := s.users[username].AuthToken
-	delete(s.tokens, token)
+	tokenHash := sha256Hex(s.users[username].AuthToken)
+	delete(s.tokenHashes, tokenHash)
 	delete(s.users, username)
 	delete(s.keyBundles, username)
 	delete(s.consumedOtk, username)
 	delete(s.pendingEnvelopes, username)
 	delete(s.sentMessages, username)
+	delete(s.deviceTokens, username)
 
 	return nil
+}
+
+func (s *InMemoryStore) RegisterDeviceToken(username, token, platform string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.users[username]; !exists {
+		return fmt.Errorf("user not found")
+	}
+
+	if s.deviceTokens[username] == nil {
+		s.deviceTokens[username] = make(map[string]*model.DeviceToken)
+	}
+
+	now := time.Now().UTC()
+	if existing, ok := s.deviceTokens[username][token]; ok {
+		existing.Platform = platform
+		existing.UpdatedAt = now
+	} else {
+		s.deviceTokens[username][token] = &model.DeviceToken{
+			Username:  username,
+			Token:     token,
+			Platform:  platform,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+	}
+	return nil
+}
+
+func (s *InMemoryStore) GetDeviceTokens(username string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tokens := s.deviceTokens[username]
+	result := make([]string, 0, len(tokens))
+	for token := range tokens {
+		result = append(result, token)
+	}
+	return result, nil
 }

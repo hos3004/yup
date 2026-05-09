@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../core/crypto_ffi/crypto_bridge.dart';
 import '../core/networking/api_client.dart';
+import '../core/push/push_service.dart';
 import '../core/secure_storage/secure_storage_service.dart';
 import '../features/key_management/data/device_registration_service.dart';
 import '../features/key_management/domain/crypto_service.dart';
@@ -10,12 +11,14 @@ class AppServices {
   final CryptoService crypto;
   final ApiClient api;
   final DeviceRegistrationService registration;
+  final PushService push;
 
   AppServices._({
     required this.storage,
     required this.crypto,
     required this.api,
     required this.registration,
+    required this.push,
   });
 
   static AppServices create({
@@ -25,11 +28,13 @@ class AppServices {
     final crypto = CryptoService(CryptoBridge());
     final api = ApiClient(baseUrl);
     final registration = DeviceRegistrationService(api, crypto, storage);
+    final push = PushService(api);
     return AppServices._(
       storage: storage,
       crypto: crypto,
       api: api,
       registration: registration,
+      push: push,
     );
   }
 }
