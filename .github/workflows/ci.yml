@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, m-ci-build-matrix]
   pull_request:
     branches: [master]
 
