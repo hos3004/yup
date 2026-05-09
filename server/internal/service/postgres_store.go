@@ -43,11 +43,10 @@ func sha256Hex(s string) string {
 
 const migrationUpSQL = `
 CREATE TABLE IF NOT EXISTS users (
-    username     VARCHAR(64)  PRIMARY KEY,
-    auth_token   VARCHAR(128) NOT NULL UNIQUE,
-    token_hash   VARCHAR(64)  NOT NULL DEFAULT '',
+    username    VARCHAR(64)  PRIMARY KEY,
+    token_hash  VARCHAR(64)  NOT NULL DEFAULT '',
     display_name VARCHAR(128) NOT NULL DEFAULT '',
-    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS key_bundles (
@@ -161,12 +160,12 @@ func (s *PostgresStore) RegisterUser(username string) (*model.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	tokenHash := sha256Hex(token)
 	now := time.Now().UTC()
+	tokenHash := sha256Hex(token)
 
 	_, err = s.pool.Exec(context.Background(),
-		`INSERT INTO users (username, auth_token, token_hash, created_at) VALUES ($1, $2, $3, $4)`,
-		username, token, tokenHash, now,
+		`INSERT INTO users (username, token_hash, created_at) VALUES ($1, $2, $3)`,
+		username, tokenHash, now,
 	)
 	if err != nil {
 		if isPGDuplicate(err) {
@@ -188,9 +187,9 @@ func (s *PostgresStore) GetUser(username string) (*model.User, bool) {
 
 	var u model.User
 	err := s.pool.QueryRow(ctx,
-		`SELECT username, auth_token, display_name, created_at FROM users WHERE username = $1`,
+		`SELECT username, display_name, created_at FROM users WHERE username = $1`,
 		username,
-	).Scan(&u.Username, &u.AuthToken, &u.DisplayName, &u.CreatedAt)
+	).Scan(&u.Username, &u.DisplayName, &u.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, false

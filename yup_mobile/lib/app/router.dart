@@ -15,6 +15,8 @@ GoRouter createRouter(AppServices services) {
         builder: (context, state) => RegisterScreen(
           registrationService: services.registration,
           onRegistered: (username, curve25519, ed25519) {
+            // Initialize push notifications after auth/session restore
+            services.push.initialize().catchError((_) {});
             context.go('/chat', extra: {
               'username': username,
               'curve25519': curve25519,

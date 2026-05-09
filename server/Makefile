@@ -12,6 +12,7 @@ db-down:
 	docker compose down
 
 # Run database migrations manually (uses golang-migrate CLI)
+# Requires db-up first. Credentials must match docker-compose.yml.
 db-migrate:
 ifeq ($(strip $(CMD)),)
 	$(error Usage: make db-migrate CMD="up"  (or "down", "drop", "goto N"))
@@ -20,7 +21,7 @@ endif
 		-v "$(PWD)/migrations:/migrations" \
 		--entrypoint sh \
 		migrate/migrate:v4.18.1 \
-		-c "migrate -path=/migrations -database 'postgres://yup:yup_pass@postgres:5432/yupdb?sslmode=disable' $(CMD)"
+		-c "migrate -path=/migrations -database 'postgres://yup:yup_dev@postgres:5432/yup?sslmode=disable' $(CMD)"
 
 # Run the server locally (requires DATABASE_URL or falls back to in-memory)
 run:
@@ -30,9 +31,11 @@ run:
 test:
 	go test ./... -count=1 -v
 
-# Run integration tests against a real PostgreSQL (requires db-up)
+# Run integration tests against a real PostgreSQL (requires: db-up, DATABASE_URL_TEST=postgres://...)
+# Example: make test-integration DATABASE_URL_TEST="postgres://yup:yup_dev@localhost:5432/yup?sslmode=disable"
+# Note: Use -p 1 to avoid parallel test interference with shared database state.
 test-integration:
-	go test ./... -count=1 -v -run "TestStoreSuite_Postgres|TestPostgresStore"
+	go test ./... -count=1 -v -p 1 -run "TestStoreSuite_Postgres|TestPostgresStore"
 
 # Clean build artifacts
 clean:

@@ -7,6 +7,5 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
   final services = AppServices.create();
-  await services.push.initialize();
   runApp(YupApp(services: services));
 }

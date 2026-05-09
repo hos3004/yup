@@ -2,7 +2,14 @@
 -- Add consumed_at to one_time_keys, unique constraint, FKs, token hashing
 
 ALTER TABLE one_time_keys ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMPTZ;
-ALTER TABLE one_time_keys ADD CONSTRAINT IF NOT EXISTS otk_unique_username_key UNIQUE (username, key_value);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'otk_unique_username_key'
+    ) THEN
+        ALTER TABLE one_time_keys ADD CONSTRAINT otk_unique_username_key UNIQUE (username, key_value);
+    END IF;
+END $$;
 
 -- Add foreign keys for messages
 ALTER TABLE messages ADD CONSTRAINT fk_messages_sender
