@@ -1,0 +1,176 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 1 — Go: build + vet  (no database)
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  go-build-vet:
+    name: "Go · Build & Vet"
+    runs-on: ubuntu-24.04
+    env:
+      GOTOOLCHAIN: local
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: "server/go.mod"
+          cache: true
+          cache-dependency-path: server/go.sum
+      - name: Go version
+        run: go version
+      - name: Build
+        run: go build ./cmd/main.go
+      - name: Vet
+        run: go vet ./...
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 2 — Go: unit tests  (no database — integration tests skip gracefully)
+# ─────────────────────────────────────────────────────────────────────────────
+  go-test-unit:
+    name: "Go · Unit Tests"
+    runs-on: ubuntu-24.04
+    env:
+      GOTOOLCHAIN: local
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: "server/go.mod"
+          cache: true
+          cache-dependency-path: server/go.sum
+      - name: Go version
+        run: go version
+      - name: Test handler package
+        run: go test ./internal/handler/... -v -count=1 -timeout 60s
+      - name: Test service package
+        run: go test ./internal/service/... -v -count=1 -timeout 60s
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 3 — Go: integration tests  (PostgreSQL 17 service container)
+# NOTE: -p 1 is mandatory — tests share a single DB and fail under parallel runs
+# ─────────────────────────────────────────────────────────────────────────────
+  go-test-integration:
+    name: "Go · Integration Tests (PostgreSQL)"
+    runs-on: ubuntu-24.04
+    env:
+      GOTOOLCHAIN: local
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: yup
+          POSTGRES_PASSWORD: yup_dev
+          POSTGRES_DB: yup
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U yup"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: "server/go.mod"
+          cache: true
+          cache-dependency-path: server/go.sum
+      - name: Go version
+        run: go version
+      - name: Integration tests
+        env:
+          DATABASE_URL_TEST: postgres://yup:yup_dev@localhost:5432/yup?sslmode=disable
+        run: go test ./... -v -count=1 -p 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 4 — Flutter: analyze + unit tests
+# ─────────────────────────────────────────────────────────────────────────────
+  flutter-analyze-test:
+    name: "Flutter · Analyze & Test"
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: yup_mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Analyze
+        run: flutter analyze
+      - name: Unit tests
+        run: flutter test
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 5 — Flutter: release APK build  (arm64, unsigned — build correctness only)
+# ─────────────────────────────────────────────────────────────────────────────
+  flutter-build-apk:
+    name: "Flutter · Build APK (arm64)"
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: yup_mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Build release APK (arm64)
+        run: flutter build apk --release --target-platform android-arm64
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 6 — Rust: tests + native release build
+# Android cross-compilation targets are excluded from CI (require NDK setup);
+# they are verified locally before each release.
+# ─────────────────────────────────────────────────────────────────────────────
+  rust-test-build:
+    name: "Rust · Test & Build"
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: yup_mobile/rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            yup_mobile/rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('yup_mobile/rust/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Test
+        run: cargo test
+      - name: Build release
+        run: cargo build --release
