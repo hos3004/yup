@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/yup/server/internal/middleware"
 	"github.com/yup/server/internal/model"
@@ -22,7 +23,7 @@ type Server struct {
 func New(store service.DataStore) *Server {
 	return &Server{
 		store:    store,
-		rl:       middleware.NewRateLimiter(30, 60),
+		rl:       middleware.NewRateLimiter(30, 60*time.Second),
 		notifier: notifier.New(),
 	}
 }

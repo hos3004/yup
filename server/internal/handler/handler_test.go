@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yup/server/internal/middleware"
 	"github.com/yup/server/internal/model"
@@ -651,7 +652,7 @@ func TestRateLimit_Returns429(t *testing.T) {
 	s.rl = nil // will be recreated per test needs if needed, but RateLimit uses s.rl
 
 	// Actually let's test via the middleware directly
-	rl := middleware.NewRateLimiter(1, 60) // 1 request per 60 seconds
+	rl := middleware.NewRateLimiter(1, time.Minute) // 1 request per minute
 	handler := rl.Middleware(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}, func(r *http.Request) string {
