@@ -17,6 +17,8 @@ jobs:
   go-build-vet:
     name: "Go · Build & Vet"
     runs-on: ubuntu-24.04
+    env:
+      GOTOOLCHAIN: local
     defaults:
       run:
         working-directory: server
@@ -24,9 +26,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.2"
+          go-version-file: "server/go.mod"
           cache: true
           cache-dependency-path: server/go.sum
+      - name: Go version
+        run: go version
       - name: Build
         run: go build ./cmd/main.go
       - name: Vet
@@ -38,6 +42,8 @@ jobs:
   go-test-unit:
     name: "Go · Unit Tests"
     runs-on: ubuntu-24.04
+    env:
+      GOTOOLCHAIN: local
     defaults:
       run:
         working-directory: server
@@ -45,11 +51,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.2"
+          go-version-file: "server/go.mod"
           cache: true
           cache-dependency-path: server/go.sum
+      - name: Go version
+        run: go version
       - name: Unit tests
-        run: go test ./... -count=1
+        run: go test ./... -v -count=1
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Job 3 — Go: integration tests  (PostgreSQL 17 service container)
@@ -58,6 +66,8 @@ jobs:
   go-test-integration:
     name: "Go · Integration Tests (PostgreSQL)"
     runs-on: ubuntu-24.04
+    env:
+      GOTOOLCHAIN: local
     services:
       postgres:
         image: postgres:17-alpine
@@ -79,9 +89,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.2"
+          go-version-file: "server/go.mod"
           cache: true
           cache-dependency-path: server/go.sum
+      - name: Go version
+        run: go version
       - name: Integration tests
         env:
           DATABASE_URL_TEST: postgres://yup:yup_dev@localhost:5432/yup?sslmode=disable
