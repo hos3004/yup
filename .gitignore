@@ -42,3 +42,6 @@ Thumbs.db
 
 # Agent skills
 .agents/
+
+# Claude Code worktrees (internal tooling — not part of the project)
+.claude/
