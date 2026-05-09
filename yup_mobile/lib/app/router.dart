@@ -33,6 +33,7 @@ GoRouter createRouter(AppServices services) {
             cryptoService: services.crypto,
             apiClient: services.api,
             secureStorage: services.storage,
+            pushService: services.push,
           );
         },
       ),

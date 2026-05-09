@@ -1,24 +1,29 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
 	"github.com/yup/server/internal/middleware"
 	"github.com/yup/server/internal/model"
+	"github.com/yup/server/internal/notifier"
 	"github.com/yup/server/internal/service"
 )
 
 type Server struct {
-	store service.DataStore
-	rl    *middleware.RateLimiter
+	store    service.DataStore
+	rl       *middleware.RateLimiter
+	notifier notifier.Notifier
 }
 
 func New(store service.DataStore) *Server {
 	return &Server{
-		store: store,
-		rl:    middleware.NewRateLimiter(30, 60),
+		store:    store,
+		rl:       middleware.NewRateLimiter(30, 60),
+		notifier: notifier.New(),
 	}
 }
 
@@ -176,7 +181,6 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request, sender stri
 		Recipient  string `json:"recipient"`
 		Ciphertext string `json:"ciphertext"`
 		MsgType    int    `json:"message_type"`
-		SenderKey  string `json:"sender_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid message")
@@ -198,35 +202,36 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request, sender stri
 		writeError(w, http.StatusBadRequest, "invalid message type")
 		return
 	}
-	if body.SenderKey != "" && !isValidBase64(body.SenderKey) {
-		writeError(w, http.StatusBadRequest, "invalid sender key encoding")
+	// Derive sender_key from authenticated sender's registered curve key
+	senderKey, ok := s.store.GetCurveKey(sender)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "sender has not uploaded keys")
 		return
 	}
-	// Validate sender_key against authenticated sender's registered curve key
-	if body.SenderKey != "" {
-		registeredKey, ok := s.store.GetCurveKey(sender)
-		if !ok {
-			writeError(w, http.StatusBadRequest, "sender has not uploaded keys")
-			return
-		}
-		if body.SenderKey != registeredKey {
-			writeError(w, http.StatusForbidden, "sender key does not match registered key")
-			return
-		}
-	} else {
-		// Derive sender_key from registered key bundle if not provided
-		registeredKey, ok := s.store.GetCurveKey(sender)
-		if !ok {
-			writeError(w, http.StatusBadRequest, "sender has not uploaded keys")
-			return
-		}
-		body.SenderKey = registeredKey
-	}
-	env, err := s.store.StoreMessage(sender, body.Recipient, body.Ciphertext, body.MsgType, body.SenderKey)
+	env, err := s.store.StoreMessage(sender, body.Recipient, body.Ciphertext, body.MsgType, senderKey)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	// Send push notification to recipient asynchronously
+	go func() {
+		tokens, err := s.store.GetDeviceTokens(body.Recipient)
+		if err != nil {
+			log.Printf("push: get tokens for %s: %v", body.Recipient, err)
+			return
+		}
+		if len(tokens) > 0 {
+			data := map[string]string{
+				"type":    "new_message",
+				"sender":  sender,
+			}
+			if _, err := s.notifier.SendPush(context.Background(), tokens, data); err != nil {
+				log.Printf("push: send to %s: %v", body.Recipient, err)
+			}
+		}
+	}()
+
 	writeJSON(w, http.StatusCreated, env)
 }
 

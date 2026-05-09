@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/yup/server/internal/handler"
 	"github.com/yup/server/internal/service"
@@ -29,6 +30,17 @@ func main() {
 	store := initStore()
 	h := handler.New(store)
 
+	// Background message purge (ADR-007): clean messages older than 7 days
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := store.PurgeExpiredMessages(7 * 24 * time.Hour); err != nil {
+				log.Printf("purge expired messages: %v", err)
+			}
+		}
+	}()
+
 	mux := http.NewServeMux()
 
 	// Public route with rate limiting
@@ -39,8 +51,9 @@ func main() {
 	mux.HandleFunc("GET /api/v1/keys/{username}", h.RateLimitAuth(h.AuthMiddleware(h.GetKeys)))
 	mux.HandleFunc("POST /api/v1/messages", h.RateLimitAuth(h.AuthMiddleware(h.SendMessage)))
 	mux.HandleFunc("GET /api/v1/messages", h.RateLimitAuth(h.AuthMiddleware(h.GetMessages)))
-	mux.HandleFunc("POST /api/v1/messages/{messageID}/ack", h.AuthMiddleware(h.AckMessage))
-	mux.HandleFunc("GET /api/v1/messages/sent", h.AuthMiddleware(h.GetSentMessages))
+	mux.HandleFunc("POST /api/v1/messages/{messageID}/ack", h.RateLimitAuth(h.AuthMiddleware(h.AckMessage)))
+	mux.HandleFunc("GET /api/v1/messages/sent", h.RateLimitAuth(h.AuthMiddleware(h.GetSentMessages)))
+	mux.HandleFunc("POST /api/v1/devices", h.RateLimitAuth(h.AuthMiddleware(h.RegisterDevice)))
 
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

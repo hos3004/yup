@@ -23,6 +23,9 @@ type DataStore interface {
 	AckMessage(messageID, username string) error
 	GetSentMessages(username string) []*model.Envelope
 	DeleteAllUserData(username string) error
+	PurgeExpiredMessages(maxAge time.Duration) error
+	RegisterDeviceToken(username, token, platform string) error
+	GetDeviceTokens(username string) ([]string, error)
 }
 
 type InMemoryStore struct {
@@ -32,9 +35,10 @@ type InMemoryStore struct {
 	devices          map[string]*model.Device      // deviceID -> device
 	keyBundles       map[string]*model.KeyBundle   // username -> latest bundle
 	consumedOtk      map[string]map[string]bool    // username -> consumed OTK set
-	messages         map[string]*model.Message     // messageID -> message
-	pendingEnvelopes map[string][]string           // username -> pending messageIDs
-	sentMessages     map[string][]string           // username -> sent messageIDs
+	messages         map[string]*model.Message                 // messageID -> message
+	pendingEnvelopes map[string][]string                       // username -> pending messageIDs
+	sentMessages     map[string][]string                       // username -> sent messageIDs
+	deviceTokens     map[string]map[string]*model.DeviceToken  // username -> token -> DeviceToken
 }
 
 func NewInMemoryStore() *InMemoryStore {
@@ -47,6 +51,7 @@ func NewInMemoryStore() *InMemoryStore {
 		messages:         make(map[string]*model.Message),
 		pendingEnvelopes: make(map[string][]string),
 		sentMessages:     make(map[string][]string),
+		deviceTokens:     make(map[string]map[string]*model.DeviceToken),
 	}
 }
 
@@ -312,6 +317,19 @@ func (s *InMemoryStore) GetSentMessages(username string) []*model.Envelope {
 	return envs
 }
 
+func (s *InMemoryStore) PurgeExpiredMessages(maxAge time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cutoff := time.Now().UTC().Add(-maxAge)
+	for id, msg := range s.messages {
+		if msg.CreatedAt.Before(cutoff) {
+			delete(s.messages, id)
+		}
+	}
+	return nil
+}
+
 func (s *InMemoryStore) DeleteAllUserData(username string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -327,6 +345,47 @@ func (s *InMemoryStore) DeleteAllUserData(username string) error {
 	delete(s.consumedOtk, username)
 	delete(s.pendingEnvelopes, username)
 	delete(s.sentMessages, username)
+	delete(s.deviceTokens, username)
 
 	return nil
+}
+
+func (s *InMemoryStore) RegisterDeviceToken(username, token, platform string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.users[username]; !exists {
+		return fmt.Errorf("user not found")
+	}
+
+	if s.deviceTokens[username] == nil {
+		s.deviceTokens[username] = make(map[string]*model.DeviceToken)
+	}
+
+	now := time.Now().UTC()
+	if existing, ok := s.deviceTokens[username][token]; ok {
+		existing.Platform = platform
+		existing.UpdatedAt = now
+	} else {
+		s.deviceTokens[username][token] = &model.DeviceToken{
+			Username:  username,
+			Token:     token,
+			Platform:  platform,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+	}
+	return nil
+}
+
+func (s *InMemoryStore) GetDeviceTokens(username string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tokens := s.deviceTokens[username]
+	result := make([]string, 0, len(tokens))
+	for token := range tokens {
+		result = append(result, token)
+	}
+	return result, nil
 }

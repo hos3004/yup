@@ -20,7 +20,7 @@ endif
 		-v "$(PWD)/migrations:/migrations" \
 		--entrypoint sh \
 		migrate/migrate:v4.18.1 \
-		-c "migrate -path=/migrations -database 'postgres://yup:yup_dev@postgres:5432/yup?sslmode=disable' $(CMD)"
+		-c "migrate -path=/migrations -database 'postgres://yup:yup_pass@postgres:5432/yupdb?sslmode=disable' $(CMD)"
 
 # Run the server locally (requires DATABASE_URL or falls back to in-memory)
 run:
@@ -32,7 +32,7 @@ test:
 
 # Run integration tests against a real PostgreSQL (requires db-up)
 test-integration:
-	go test ./internal/service/ -run TestPostgresStore -count=1 -v -tags=integration
+	go test ./... -count=1 -v -run "TestStoreSuite_Postgres|TestPostgresStore"
 
 # Clean build artifacts
 clean:

@@ -360,7 +360,7 @@ func TestSendMessage_BindsSenderToAuthToken(t *testing.T) {
 	registerUser(t, s, "bob")
 	uploadKeys(t, s, aliceToken, "alice")
 
-	body := `{"recipient":"bob","ciphertext":"YWIxMg==","message_type":0,"sender_key":"aliceCurveKey"}`
+	body := `{"recipient":"bob","ciphertext":"YWIxMg==","message_type":0}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages", strings.NewReader(body))
 	req.Header.Set("Authorization", authHeader(aliceToken))
 	w := httptest.NewRecorder()
@@ -377,17 +377,16 @@ func TestSendMessage_BindsSenderToAuthToken(t *testing.T) {
 	}
 }
 
-func TestSendMessage_SenderSpoofingRejected(t *testing.T) {
+func TestSendMessage_SenderBoundToAuthToken(t *testing.T) {
 	s := newTestServer()
 	aliceToken := registerUser(t, s, "alice")
 	registerUser(t, s, "bob")
 	registerUser(t, s, "mallory")
 	uploadKeys(t, s, aliceToken, "alice")
 
-	// Mallory tries to send as alice — but sender is derived from token
-	body := `{"recipient":"bob","ciphertext":"YWIxMg==","message_type":0,"sender_key":"aliceCurveKey"}`
+	// Sender is derived from auth token, not from body
+	body := `{"recipient":"bob","ciphertext":"YWIxMg==","message_type":0}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages", strings.NewReader(body))
-	// Using alice's token, sender is derived from token
 	req.Header.Set("Authorization", authHeader(aliceToken))
 	w := httptest.NewRecorder()
 	handler := s.AuthMiddleware(s.SendMessage)
@@ -399,25 +398,7 @@ func TestSendMessage_SenderSpoofingRejected(t *testing.T) {
 	var result map[string]any
 	json.Unmarshal(w.Body.Bytes(), &result)
 	if result["sender_username"] != "alice" {
-		t.Errorf("sender should be 'alice' (from token), not spoofed, got %v", result["sender_username"])
-	}
-}
-
-func TestSendMessage_WrongSenderKey(t *testing.T) {
-	s := newTestServer()
-	aliceToken := registerUser(t, s, "alice")
-	registerUser(t, s, "bob")
-	uploadKeys(t, s, aliceToken, "alice")
-
-	// Send with wrong sender_key
-	body := `{"recipient":"bob","ciphertext":"YWIxMg==","message_type":0,"sender_key":"WrongSenderKey"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages", strings.NewReader(body))
-	req.Header.Set("Authorization", authHeader(aliceToken))
-	w := httptest.NewRecorder()
-	handler := s.AuthMiddleware(s.SendMessage)
-	handler(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Errorf("wrong sender_key: got %d, want 403; body: %s", w.Code, w.Body.String())
+		t.Errorf("sender should be 'alice' (from token), got %v", result["sender_username"])
 	}
 }
 
@@ -445,6 +426,23 @@ func TestSendMessage_SenderKeyDerivedFromRegisteredKey(t *testing.T) {
 	}
 }
 
+func TestSendMessage_NoKeysUploaded(t *testing.T) {
+	s := newTestServer()
+	aliceToken := registerUser(t, s, "alice")
+	registerUser(t, s, "bob")
+
+	// Alice hasn't uploaded keys
+	body := `{"recipient":"bob","ciphertext":"YWIxMg==","message_type":0}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages", strings.NewReader(body))
+	req.Header.Set("Authorization", authHeader(aliceToken))
+	w := httptest.NewRecorder()
+	handler := s.AuthMiddleware(s.SendMessage)
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("no keys uploaded: got %d, want 400; body: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestSendMessage_InvalidRecipient(t *testing.T) {
 	s := newTestServer()
 	aliceToken := registerUser(t, s, "alice")
@@ -456,12 +454,12 @@ func TestSendMessage_InvalidRecipient(t *testing.T) {
 		body       string
 		wantStatus int
 	}{
-		{"short recipient", `{"recipient":"ab","ciphertext":"YWIxMg==","message_type":0,"sender_key":"aliceCurveKey"}`, http.StatusBadRequest},
-		{"empty ciphertext", `{"recipient":"bob","ciphertext":"","message_type":0,"sender_key":"aliceCurveKey"}`, http.StatusBadRequest},
-		{"invalid message_type", `{"recipient":"bob","ciphertext":"YWIxMg==","message_type":2,"sender_key":"aliceCurveKey"}`, http.StatusBadRequest},
-		{"negative message_type", `{"recipient":"bob","ciphertext":"YWIxMg==","message_type":-1,"sender_key":"aliceCurveKey"}`, http.StatusBadRequest},
-		{"recipient not found", `{"recipient":"nonexistent","ciphertext":"YWIxMg==","message_type":0,"sender_key":"aliceCurveKey"}`, http.StatusBadRequest},
-		{"invalid ciphertext chars", `{"recipient":"bob","ciphertext":"!!!invalid!!!","message_type":0,"sender_key":"aliceCurveKey"}`, http.StatusBadRequest},
+		{"short recipient", `{"recipient":"ab","ciphertext":"YWIxMg==","message_type":0}`, http.StatusBadRequest},
+		{"empty ciphertext", `{"recipient":"bob","ciphertext":"","message_type":0}`, http.StatusBadRequest},
+		{"invalid message_type", `{"recipient":"bob","ciphertext":"YWIxMg==","message_type":2}`, http.StatusBadRequest},
+		{"negative message_type", `{"recipient":"bob","ciphertext":"YWIxMg==","message_type":-1}`, http.StatusBadRequest},
+		{"recipient not found", `{"recipient":"nonexistent","ciphertext":"YWIxMg==","message_type":0}`, http.StatusBadRequest},
+		{"invalid ciphertext chars", `{"recipient":"bob","ciphertext":"!!!invalid!!!","message_type":0}`, http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {

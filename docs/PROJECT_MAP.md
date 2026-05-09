@@ -46,8 +46,8 @@ mobile/lib/
 │   │   └── presentation/         # (empty — no UI, background service)
 │   ├── messaging/
 │   │   ├── data/                 # SessionStore, PeerKeyStore
-│   │   ├── domain/               # ConversationService (encrypt/send/poll/decrypt)
-│   │   └── presentation/         # ChatScreen (with key changed warning)
+│   │   ├── domain/               # ConversationService (1:1), GroupService (Megolm groups)
+│   │   └── presentation/         # ChatScreen, GroupListScreen, GroupChatScreen, CreateGroupScreen
 │   ├── verification/
 │   │   ├── data/                 # VerificationService
 │   │   ├── domain/               # (empty)
@@ -89,13 +89,17 @@ server/
 ```
 Private Keys ─── NEVER leave the device
 
-Library: Vodozemac 0.10 (Olm verified)
+Library: Vodozemac 0.10 (Olm + Megolm verified)
     └── C FFI layer in yup_crypto Rust crate
+    └── Olm: 1:1 double-ratchet sessions (account, outbound/inbound, pickling)
+    └── Megolm: Group ratchet (outbound/inbound sessions, encrypt/decrypt, export key)
     └── Fingerprint: SHA-256 of both identity keys in canonical sorted order
 
 Communication with Flutter: manual dart:ffi binds
 Key Storage: flutter_secure_storage (Keystore/Keychain-backed)
-Protocols: Olm session establishment, SAS verification (fingerprint comparison)
+Protocols: Olm session establishment, SAS verification, Megolm group encryption
+Group Key Distribution: Exported Megolm session key encrypted per-member via 1:1 Olm (msg_type=2)
+Polling: Separate group message polling via GET /api/v1/groups/{id}/messages
 ```
 
 ---
@@ -129,6 +133,21 @@ Protocols: Olm session establishment, SAS verification (fingerprint comparison)
 ### QR Scanning (Pending)
 - Verification is currently out-of-band text comparison only.
 
+### M10 — Push Notifications
+- `internal/notifier/notifier.go`: FCM push via Firebase Admin SDK, noop fallback.
+- `POST /api/v1/devices`: Device token registration (auth-protected).
+- Push sent async after `StoreMessage` and `SendGroupMessage`.
+- Flutter `PushService` provides `pushTriggers` stream for immediate polling.
+
+### M11 — Group Chats
+- Server-side: `groups`, `group_members`, `group_messages` tables (Postgres/InMemory).
+- Group API: create, get, list, add/remove members, send/get messages.
+- Client-side Megolm FFI: `CryptoService` exposes 5 Megolm methods.
+- `GroupService`: outbound session creation, Megolm encrypt/decrypt, session key distribution via 1:1 Olm.
+- Session key distribution: exported Megolm key encrypted per-member via existing Olm sessions (msg_type=2).
+- `ConversationService` forwards msg_type=2 to `GroupService.handleIncomingSessionKey`.
+- Persistent inbound sessions via secure storage (`megolm_inbound:$username`).
+
 ---
 
 ## [MILESTONE STATUS]
@@ -147,3 +166,5 @@ Protocols: Olm session establishment, SAS verification (fingerprint comparison)
 | **M7-FIX** | **Reaudit Blocking Fixes (6 blockers)** | **✅ All 6 resolved** |
 | M8 | PostgreSQL Persistence | ✅ Completed |
 | M9 | Security Verification & Evidence Pack | ✅ Completed |
+| **M10** | **FCM Push Notifications** | **✅ Completed** |
+| **M11** | **E2EE Group Chats (Megolm)** | **✅ Completed** |
